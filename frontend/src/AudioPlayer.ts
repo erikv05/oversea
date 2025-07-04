@@ -15,6 +15,11 @@ export class AudioPlayer {
     console.log('Adding to audio queue:', url, 'Unlocked:', this.isUnlocked, 'Playing:', this.isPlaying);
     this.queue.push({ url, text });
     
+    // Try to unlock if not already unlocked
+    if (!this.isUnlocked) {
+      this.unlock();
+    }
+    
     if (!this.isPlaying && this.isUnlocked) {
       this.playNext();
     } else if (!this.isUnlocked) {
@@ -38,7 +43,10 @@ export class AudioPlayer {
 
     try {
       console.log('Fetching audio from:', url);
-      const response = await fetch(url);
+      const response = await fetch(url, {
+        mode: 'cors',
+        credentials: 'same-origin'
+      });
       
       if (!response.ok) {
         throw new Error(`HTTP error! status: ${response.status}`);
@@ -49,11 +57,14 @@ export class AudioPlayer {
       console.log('ArrayBuffer size:', arrayBuffer.byteLength);
       
       if (!this.audioContext) {
-        throw new Error('AudioContext is null');
+        console.error('AudioContext is null, creating new one');
+        const AudioContextClass = (window as any).AudioContext || (window as any).webkitAudioContext;
+        this.audioContext = new AudioContextClass();
       }
       
       if (this.audioContext.state !== 'running') {
         console.warn('AudioContext state is:', this.audioContext.state);
+        await this.audioContext.resume();
       }
       
       const audioBuffer = await this.audioContext.decodeAudioData(arrayBuffer);
@@ -70,11 +81,16 @@ export class AudioPlayer {
       
       console.log('Starting audio playback...');
       source.start(0);
+      console.log('Audio playback started successfully');
     } catch (error) {
       console.error('Error playing audio:', error);
       console.error('Error details:', {
         message: (error as Error).message,
-        stack: (error as Error).stack
+        stack: (error as Error).stack,
+        audioContext: this.audioContext ? {
+          state: this.audioContext.state,
+          sampleRate: this.audioContext.sampleRate
+        } : 'null'
       });
       // Continue with next chunk on error
       setTimeout(() => this.playNext(), 100);
@@ -99,29 +115,34 @@ export class AudioPlayer {
       console.log('Created new AudioContext, state:', this.audioContext.state);
     }
     
-    if (this.audioContext.state === 'suspended') {
-      console.log('AudioContext is suspended, attempting to resume...');
-      this.audioContext.resume().then(() => {
-        this.isUnlocked = true;
-        console.log('AudioContext resumed successfully, state:', this.audioContext.state);
-        
-        // Process any queued audio
-        if (this.queue.length > 0 && !this.isPlaying) {
-          console.log('Starting queued audio after unlock, queue length:', this.queue.length);
-          this.playNext();
-        }
-      }).catch(e => {
-        console.error('Failed to unlock audio context:', e);
-      });
-    } else {
+    // Safari workaround: Play a silent buffer to unlock
+    const isSafari = /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
+    if (isSafari && this.audioContext.state === 'suspended') {
+      console.log('Safari detected, playing silent buffer to unlock');
+      const buffer = this.audioContext.createBuffer(1, 1, 22050);
+      const source = this.audioContext.createBufferSource();
+      source.buffer = buffer;
+      source.connect(this.audioContext.destination);
+      source.start(0);
+    }
+    
+    // Always try to resume
+    this.audioContext.resume().then(() => {
       this.isUnlocked = true;
-      console.log('AudioContext already running, state:', this.audioContext.state);
+      console.log('AudioContext resumed, state:', this.audioContext.state);
       
       // Process any queued audio
       if (this.queue.length > 0 && !this.isPlaying) {
-        console.log('Starting queued audio, queue length:', this.queue.length);
+        console.log('Starting queued audio after unlock, queue length:', this.queue.length);
         this.playNext();
       }
-    }
+    }).catch(e => {
+      console.error('Failed to unlock audio context:', e);
+      // Even if resume fails, mark as unlocked and try to play
+      this.isUnlocked = true;
+      if (this.queue.length > 0 && !this.isPlaying) {
+        this.playNext();
+      }
+    });
   }
 }
