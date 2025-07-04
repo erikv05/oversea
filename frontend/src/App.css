@@ -76,12 +76,6 @@
   animation: pulse 1.5s infinite;
 }
 
-.mic-button.processing {
-  background-color: #1976d2;
-  border-color: #2196f3;
-  cursor: not-allowed;
-}
-
 @keyframes pulse {
   0% {
     box-shadow: 0 0 0 0 rgba(211, 47, 47, 0.7);
@@ -97,4 +91,37 @@
 .status {
   color: #888;
   font-size: 1.1rem;
+}
+
+.streaming-debug {
+  margin-top: 2rem;
+  padding: 1rem;
+  border: 1px solid #666;
+  border-radius: 8px;
+  background-color: #1a1a1a;
+  text-align: left;
+}
+
+.streaming-debug h3 {
+  margin: 0 0 0.5rem 0;
+  color: #4CAF50;
+  font-size: 1rem;
+}
+
+.streaming-text {
+  padding: 0.5rem;
+  background-color: #0a0a0a;
+  border-radius: 4px;
+  font-family: monospace;
+  font-size: 0.9rem;
+  max-height: 100px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.streaming-stats {
+  margin-top: 0.5rem;
+  font-size: 0.8rem;
+  color: #888;
 }
