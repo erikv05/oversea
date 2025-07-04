@@ -1,0 +1,100 @@
+#root {
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 2rem;
+  text-align: center;
+  height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.app {
+  width: 100%;
+  max-width: 800px;
+}
+
+.container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2rem;
+}
+
+.conversation {
+  width: 100%;
+  max-height: 400px;
+  overflow-y: auto;
+  border: 1px solid #333;
+  border-radius: 8px;
+  padding: 1rem;
+  background-color: #1a1a1a;
+  text-align: left;
+}
+
+.message {
+  margin-bottom: 1rem;
+  padding: 0.5rem;
+  border-radius: 4px;
+}
+
+.message.user {
+  background-color: #2a3f5f;
+}
+
+.message.assistant {
+  background-color: #3f2a5f;
+}
+
+.message.interim {
+  opacity: 0.7;
+  font-style: italic;
+}
+
+.mic-button {
+  width: 120px;
+  height: 120px;
+  border-radius: 50%;
+  font-size: 3rem;
+  background-color: #2c2c2c;
+  border: 3px solid #444;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.mic-button:hover:not(:disabled) {
+  background-color: #3c3c3c;
+  transform: scale(1.05);
+}
+
+.mic-button.listening {
+  background-color: #d32f2f;
+  border-color: #f44336;
+  animation: pulse 1.5s infinite;
+}
+
+.mic-button.processing {
+  background-color: #1976d2;
+  border-color: #2196f3;
+  cursor: not-allowed;
+}
+
+@keyframes pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(211, 47, 47, 0.7);
+  }
+  70% {
+    box-shadow: 0 0 0 20px rgba(211, 47, 47, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(211, 47, 47, 0);
+  }
+}
+
+.status {
+  color: #888;
+  font-size: 1.1rem;
+}
