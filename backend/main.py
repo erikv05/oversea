@@ -48,7 +48,7 @@ AUDIO_DIR = Path("temp_audio")
 AUDIO_DIR.mkdir(exist_ok=True)
 
 # Initialize MCP client
-MCP_URL = "https://mcp.zapier.com/api/mcp/s/NzQ1N2UwMjQtNzU3NC00ZTE2LWJmYTgtZTE5NjU2ZjM3NjEzOjE4ZTI1NzVkLTU3MjAtNDRmMi04YzMyLWUxNmM5ZmQyOThkNw=="
+MCP_URL = "https://mcp.zapier.com/api/mcp/s/YjFmMGM0NjItMmYwOC00Y2M3LWEyY2EtN2JjNmY3ODU5Njg3OmMyNzViMDI4LWNmYTctNDIxZi04ZDAxLTU2ODQ3ODczNTgzMQ=="
 mcp_client = None
 
 @app.get("/")
@@ -274,6 +274,8 @@ async def generate_gemini_response_stream(user_message: str, conversation: list)
     try:
         # Format conversation history for Gemini
         prompt = "You are a helpful voice assistant with access to external tools. Keep responses concise and conversational. Start your response immediately without any preamble.\n\n"
+        prompt += "When a user asks you to create a calendar event, CREATE IT IMMEDIATELY using the tools, even if they don't provide all details. If no time is specified, use 'tomorrow at 2pm'. If no title is specified, use 'Meeting' or 'Appointment'. Never ask for more details - just create the event with sensible defaults.\n"
+        prompt += f"Today's date is {datetime.now().strftime('%Y-%m-%d')}. When creating test events, use tomorrow or a future date.\n\n"
         
         # Add available tools if MCP is connected
         if mcp_client and mcp_client.tools:
@@ -281,7 +283,10 @@ async def generate_gemini_response_stream(user_message: str, conversation: list)
             prompt += mcp_client.get_tools_description()
             prompt += "\n\nTo use a tool, respond with a JSON block in this format:\n"
             prompt += '```tool\n{"tool": "tool_name", "arguments": {"param1": "value1"}}\n```\n'
-            prompt += "After using a tool, continue with your response based on the result.\n\n"
+            prompt += "After using a tool, continue with your response based on the result.\n"
+            prompt += "IMPORTANT: All tools require an 'instructions' parameter that describes what to do.\n"
+            prompt += "For calendar events, use google_calendar_quick_add_event with both 'text' and 'instructions' parameters.\n"
+            prompt += "Example: ```tool\n{\"tool\": \"google_calendar_quick_add_event\", \"arguments\": {\"text\": \"Meeting tomorrow at 8am\", \"instructions\": \"Create a meeting tomorrow at 8am\"}}\n```\n\n"
         
         # Add conversation history
         for msg in conversation[-10:]:  # Keep last 10 messages for context
@@ -319,16 +324,51 @@ async def generate_gemini_response_stream(user_message: str, conversation: list)
                         
                         # Execute tool call
                         if mcp_client:
-                            result = await mcp_client.call_tool(tool_name, arguments)
+                            # Add instructions parameter if not present (required by Zapier MCP)
+                            if "instructions" not in arguments:
+                                # Generate instructions based on the tool and arguments
+                                if tool_name == "google_calendar_create_detailed_event":
+                                    summary = arguments.get("summary", "Event")
+                                    start = arguments.get("start__dateTime", "")
+                                    end = arguments.get("end__dateTime", "")
+                                    arguments["instructions"] = f"Create an event called '{summary}' from {start} to {end}"
+                                elif tool_name == "google_calendar_quick_add_event":
+                                    text = arguments.get("text", "")
+                                    arguments["instructions"] = f"Create an event: {text}"
+                                else:
+                                    arguments["instructions"] = f"Execute {tool_name} with provided arguments"
                             
                             # Yield the text before the tool call
                             pre_tool_text = buffer[:match.start()]
                             if pre_tool_text:
                                 yield pre_tool_text
+                            else:
+                                # If no text before tool call, announce what we're doing
+                                if "calendar" in tool_name and "create" in tool_name.lower():
+                                    yield "I'll create that calendar event for you. "
+                                elif "calendar" in tool_name and "find" in tool_name.lower():
+                                    yield "Let me check your calendar. "
+                                else:
+                                    yield f"Let me {tool_name.replace('_', ' ')} for you. "
+                            try:
+                                # Add a timeout to the MCP call
+                                result = await asyncio.wait_for(
+                                    mcp_client.call_tool(tool_name, arguments),
+                                    timeout=30.0  # 30 second timeout
+                                )
+                                print(f"MCP call completed")
+                                print(f"MCP call result: {result}")
+                            except asyncio.TimeoutError:
+                                print(f"MCP call timed out after 30 seconds")
+                                result = {"error": "The operation timed out. The calendar event may still be created in the background."}
                             
                             # Yield tool result in a user-friendly way
-                            if "error" in result:
-                                yield f"I encountered an error: {result['error']}. "
+                            if "error" in result and result["error"]:
+                                error_msg = result['error']
+                                if "taking longer than expected" in error_msg:
+                                    yield f"The calendar operation is taking a while. {error_msg} "
+                                else:
+                                    yield f"I encountered an issue: {error_msg} "
                             else:
                                 # Parse result for user-friendly message
                                 if "content" in result and isinstance(result["content"], list):
@@ -362,6 +402,11 @@ async def generate_gemini_response_stream(user_message: str, conversation: list)
                         buffer = ""
                 else:
                     # No tool call found, yield text up to last newline
+                    # But first check if we might be in the middle of a tool call
+                    if '```tool' in buffer and '```' not in buffer[buffer.find('```tool') + 7:]:
+                        # We're in the middle of a tool call, don't yield yet
+                        continue
+                    
                     last_newline = buffer.rfind('\n')
                     if last_newline > -1:
                         yield buffer[:last_newline + 1]
@@ -372,7 +417,64 @@ async def generate_gemini_response_stream(user_message: str, conversation: list)
         
         # Yield any remaining buffer
         if buffer:
-            yield buffer
+            # Check one more time for tool calls in final buffer
+            tool_pattern = r'```tool\n(.*?)\n```'
+            match = re.search(tool_pattern, buffer, re.DOTALL)
+            if match:
+                # Process the tool call here
+                try:
+                    tool_json = match.group(1).strip()
+                    print(f"Found tool call JSON: {tool_json}")
+                    tool_call = json.loads(tool_json)
+                    tool_name = tool_call.get("tool")
+                    arguments = tool_call.get("arguments", {})
+                    
+                    print(f"Executing tool: {tool_name} with arguments: {arguments}")
+                    
+                    if mcp_client:
+                        pre_tool_text = buffer[:match.start()]
+                        if pre_tool_text:
+                            yield pre_tool_text
+                        else:
+                            if "calendar" in tool_name and "create" in tool_name.lower():
+                                yield "I'll create that calendar event for you. "
+                            elif "calendar" in tool_name and "find" in tool_name.lower():
+                                yield "Let me check your calendar. "
+                            else:
+                                yield f"Let me {tool_name.replace('_', ' ')} for you. "
+                        
+                        result = await mcp_client.call_tool(tool_name, arguments)
+                        print(f"MCP call result: {result}")
+                        
+                        if "error" in result and result["error"]:
+                            error_msg = result['error']
+                            if "taking longer than expected" in error_msg:
+                                yield f"The calendar operation is taking a while. {error_msg} "
+                            else:
+                                yield f"I encountered an issue: {error_msg} "
+                        else:
+                            if "content" in result and isinstance(result["content"], list):
+                                for content in result["content"]:
+                                    if content.get("type") == "text":
+                                        try:
+                                            data = json.loads(content["text"])
+                                            if "results" in data and data["results"]:
+                                                event = data["results"][0]
+                                                summary = event.get("summary", "event")
+                                                start = event.get("start", {})
+                                                start_time = start.get("time_pretty", start.get("dateTime_pretty", ""))
+                                                yield f"I've created '{summary}' for {start_time}. "
+                                            else:
+                                                yield f"I've successfully completed the {tool_name.replace('_', ' ')} action. "
+                                        except:
+                                            yield f"I've successfully completed the {tool_name.replace('_', ' ')} action. "
+                            else:
+                                yield f"I've successfully completed the {tool_name.replace('_', ' ')} action. "
+                except Exception as e:
+                    print(f"Error processing final buffer tool call: {e}")
+                    yield buffer
+            else:
+                yield buffer
                 
     except Exception as e:
         print(f"Error generating Gemini response: {str(e)}")
