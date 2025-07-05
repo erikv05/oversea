@@ -136,8 +136,10 @@ function App() {
           
         case 'text_chunk':
           // Update the streaming text
+          console.log(`[${new Date().toISOString()}] Received text chunk:`, data.text)
           currentResponseRef.current += data.text
           setStreamingText(currentResponseRef.current)
+          console.log(`[${new Date().toISOString()}] Total streaming text:`, currentResponseRef.current.length, 'chars')
           setConversation(prev => {
             const newConv = [...prev]
             if (newConv.length > 0 && newConv[newConv.length - 1].role === 'assistant') {
@@ -151,12 +153,13 @@ function App() {
         case 'audio_chunk':
           // Queue audio chunk for playback
           const audioUrl = `http://localhost:8000${data.audio_url}`
-          console.log('Received audio chunk:', audioUrl, 'Text:', data.text)
+          console.log(`[${new Date().toISOString()}] Received audio chunk:`, audioUrl, 'Text:', data.text)
           console.log('Current state - pending:', pendingResponseRef.current, 'processing:', isProcessingRef.current)
           
           if (audioPlayerRef.current) {
             // Clear pending response once audio starts playing
             pendingResponseRef.current = null
+            console.log(`[${new Date().toISOString()}] Adding to audio queue`)
             audioPlayerRef.current.addToQueue(audioUrl, data.text)
           }
           break
@@ -485,6 +488,11 @@ function App() {
           {transcript && (
             <div className="message user interim">
               <strong>You:</strong> {transcript}
+            </div>
+          )}
+          {streamingText && (
+            <div className="message assistant streaming">
+              <strong>Agent:</strong> {streamingText}
             </div>
           )}
         </div>

@@ -16,6 +16,9 @@ import io
 import time
 from mcp_client import MCPClient
 
+# Global semaphore for TTS rate limiting (max 3 concurrent requests)
+TTS_SEMAPHORE = asyncio.Semaphore(3)
+
 load_dotenv()
 
 app = FastAPI()
@@ -55,34 +58,98 @@ mcp_client = None
 def read_root():
     return {"message": "Voice Agent API"}
 
-async def generate_and_send_tts(websocket: WebSocket, text: str, gen_id: int, current_gen_id_ref):
-    """Generate TTS and send to client asynchronously"""
+async def generate_and_queue_tts(websocket: WebSocket, text: str, gen_id: int, current_gen_id_ref, 
+                                chunk_index: int, audio_queue: dict, audio_queue_lock: asyncio.Lock,
+                                chunks_notifier: asyncio.Event):
+    """Generate TTS and add to ordered queue"""
     try:
         # Check if this generation is still current before starting TTS
         if gen_id != current_gen_id_ref():
             print(f"TTS generation {gen_id} cancelled before starting")
             return
-            
-        start_time = time.time()
-        audio_url = await generate_tts_audio(text)
-        generation_time = time.time() - start_time
-        print(f"TTS generated in {generation_time:.2f}s for: {text[:50]}...")
         
-        # Check again before sending
+        # Use semaphore to limit concurrent TTS requests
+        async with TTS_SEMAPHORE:
+            print(f"[{time.time():.2f}] Acquired TTS semaphore for chunk {chunk_index}")
+            start_time = time.time()
+            audio_url = await generate_tts_audio(text)
+            generation_time = time.time() - start_time
+            print(f"[{time.time():.2f}] TTS generated in {generation_time:.2f}s for chunk {chunk_index}: {text[:50]}...")
+        
+        # Check again before queuing
         if gen_id != current_gen_id_ref():
-            print(f"TTS generation {gen_id} cancelled before sending")
+            print(f"TTS generation {gen_id} cancelled before queuing")
             return
         
-        if audio_url:
-            await websocket.send_json({
-                "type": "audio_chunk",
-                "audio_url": audio_url,
-                "text": text
-            })
+        # Add to queue and notify
+        async with audio_queue_lock:
+            audio_queue[chunk_index] = (audio_url, text) if audio_url else None
+            print(f"[{time.time():.2f}] Added chunk {chunk_index} to queue")
+        
+        # Notify the audio sender that new chunks are available
+        chunks_notifier.set()
+            
     except asyncio.CancelledError:
         print(f"TTS generation {gen_id} cancelled")
     except Exception as e:
         print(f"Error in TTS generation: {e}")
+
+async def send_queued_audio(websocket: WebSocket, audio_queue: dict, audio_queue_lock: asyncio.Lock, 
+                           next_audio_to_send: list, gen_id: int, current_gen_id_ref, total_chunks: list,
+                           chunks_notifier: asyncio.Event):
+    """Send audio chunks in order as they become available"""
+    
+    while True:
+        # Wait for notification that new chunks might be available
+        await chunks_notifier.wait()
+        chunks_notifier.clear()
+        
+        # Process all available chunks
+        while True:
+            async with audio_queue_lock:
+                # Check if we've sent all chunks
+                if total_chunks[0] is not None and next_audio_to_send[0] >= total_chunks[0]:
+                    print(f"[{time.time():.2f}] All {total_chunks[0]} audio chunks sent, stopping audio sender")
+                    return
+                
+                # Check if next chunk is ready
+                if next_audio_to_send[0] in audio_queue:
+                    chunk_data = audio_queue.pop(next_audio_to_send[0])
+                    current_index = next_audio_to_send[0]
+                    next_audio_to_send[0] += 1
+                    
+                    if chunk_data is None:
+                        # This chunk had no audio (maybe an error)
+                        continue
+                        
+                    audio_url, text = chunk_data
+                    print(f"[{time.time():.2f}] Sending audio chunk {current_index} to frontend: {text[:50]}...")
+                    
+                    # Send without holding the lock
+                    sending_data = {
+                        "type": "audio_chunk",
+                        "audio_url": audio_url,
+                        "text": text,
+                        "chunk_index": current_index
+                    }
+                else:
+                    # Next chunk not ready yet, exit inner loop
+                    break
+            
+            # Send the audio chunk (outside the lock)
+            if 'sending_data' in locals():
+                try:
+                    await websocket.send_json(sending_data)
+                    print(f"[{time.time():.2f}] Audio chunk {current_index} sent successfully")
+                    del sending_data
+                except Exception as e:
+                    print(f"Error sending audio chunk: {e}")
+                    return
+        
+        # Check if we should stop due to cancellation
+        if gen_id != current_gen_id_ref():
+            print(f"Audio sender for generation {gen_id} stopping due to cancellation")
+            return
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
@@ -144,6 +211,23 @@ async def websocket_endpoint(websocket: WebSocket):
                     complete_sentences = []  # Store complete sentences
                     sentences_processed = 0  # Track sentences already processed for TTS
                     
+                    # Audio queue to maintain order
+                    audio_queue = {}  # chunk_index -> (audio_url, text) or None
+                    next_audio_to_send = [0]  # Track which audio chunk to send next (list for mutability)
+                    audio_queue_lock = asyncio.Lock()
+                    chunk_counter = 0  # Counter for chunk indices
+                    total_chunks = [None]  # Will be set when we know total chunks (list for mutability)
+                    chunks_notifier = asyncio.Event()  # Event to notify when chunks are ready
+                    
+                    # Start the audio sender task
+                    audio_sender_task = asyncio.create_task(
+                        send_queued_audio(websocket, audio_queue, audio_queue_lock, 
+                                        next_audio_to_send, generation_id, lambda: current_generation_id,
+                                        total_chunks, chunks_notifier)
+                    )
+                    active_tasks.add(audio_sender_task)
+                    audio_sender_task.add_done_callback(lambda t: active_tasks.discard(t))
+                    
                     try:
                         async for text_chunk in generate_gemini_response_stream(user_message, conversation):
                             # Check if cancelled
@@ -157,8 +241,10 @@ async def websocket_endpoint(websocket: WebSocket):
                             # Send text chunk immediately
                             await websocket.send_json({
                                 "type": "text_chunk",
-                                "text": text_chunk
+                                "text": text_chunk,
+                                "timestamp": time.time()
                             })
+                            print(f"[{time.time():.2f}] Sent text chunk: {text_chunk[:30]}...")
                             
                             # Log progress every 10 characters to reduce noise
                             if len(full_response) % 10 == 0:
@@ -194,16 +280,20 @@ async def websocket_endpoint(websocket: WebSocket):
                             # Add new complete sentences to our list
                             complete_sentences.extend(current_sentences)
                             
-                            # Process sentences as soon as we have 1 for faster audio start
-                            # Will process in pairs when we have 2, or single if that's all we have
+                            # Process sentences with optimized chunking for minimal latency
                             while len(complete_sentences) - sentences_processed >= 1:
-                                # Get the next 1-2 unprocessed sentences
-                                if len(complete_sentences) - sentences_processed >= 2:
+                                # For the very first sentence, always process it alone for fastest time to first token
+                                if sentences_processed == 0:
+                                    # Process first sentence individually
+                                    chunk_sentences = complete_sentences[sentences_processed:sentences_processed + 1]
+                                    sentences_processed += 1
+                                # After first sentence, process in 2-sentence chunks when possible
+                                elif len(complete_sentences) - sentences_processed >= 2:
                                     # Process 2 sentences if available
                                     chunk_sentences = complete_sentences[sentences_processed:sentences_processed + 2]
                                     sentences_processed += 2
                                 else:
-                                    # Process single sentence for faster start
+                                    # Process single sentence if that's all we have left
                                     chunk_sentences = complete_sentences[sentences_processed:sentences_processed + 1]
                                     sentences_processed += 1
                                 chunk_text = ' '.join(chunk_sentences)
@@ -211,11 +301,16 @@ async def websocket_endpoint(websocket: WebSocket):
                                 if chunk_text.strip() and ELEVENLABS_API_KEY:
                                     # Check if still current before generating TTS
                                     if gen_id == current_generation_id:
-                                        print(f"Generating TTS for: {chunk_text[:50]}...")
+                                        print(f"[{time.time():.2f}] Generating TTS for chunk {chunk_counter}: {chunk_text[:50]}...")
                                         # Run TTS generation in background to not block streaming
-                                        tts_task = asyncio.create_task(generate_and_send_tts(websocket, chunk_text, gen_id, lambda: current_generation_id))
+                                        tts_task = asyncio.create_task(
+                                            generate_and_queue_tts(websocket, chunk_text, gen_id, lambda: current_generation_id,
+                                                                 chunk_counter, audio_queue, audio_queue_lock, chunks_notifier)
+                                        )
                                         active_tasks.add(tts_task)
                                         tts_task.add_done_callback(lambda t: active_tasks.discard(t))
+                                        chunk_counter += 1
+                                        print(f"[{time.time():.2f}] TTS task created for chunk {chunk_counter-1}, {len(active_tasks)} active tasks")
                         
                         # Add any remaining text buffer as a final sentence (unless it's a tool call)
                         if text_buffer.strip() and '```tool' not in text_buffer:
@@ -227,10 +322,22 @@ async def websocket_endpoint(websocket: WebSocket):
                             # Process remaining sentences (could be 1 or 2)
                             chunk_text = ' '.join(remaining_sentences)
                             if chunk_text.strip() and '```tool' not in chunk_text:
-                                print(f"Generating TTS for final chunk: {chunk_text[:50]}...")
-                                tts_task = asyncio.create_task(generate_and_send_tts(websocket, chunk_text, gen_id, lambda: current_generation_id))
+                                print(f"[{time.time():.2f}] Generating TTS for final chunk {chunk_counter}: {chunk_text[:50]}...")
+                                tts_task = asyncio.create_task(
+                                    generate_and_queue_tts(websocket, chunk_text, gen_id, lambda: current_generation_id,
+                                                         chunk_counter, audio_queue, audio_queue_lock, chunks_notifier)
+                                )
                                 active_tasks.add(tts_task)
                                 tts_task.add_done_callback(lambda t: active_tasks.discard(t))
+                                chunk_counter += 1
+                        
+                        # Signal end of audio chunks
+                        async with audio_queue_lock:
+                            total_chunks[0] = chunk_counter
+                            print(f"[{time.time():.2f}] Total chunks to send: {chunk_counter}")
+                        
+                        # Notify audio sender that we're done generating chunks
+                        chunks_notifier.set()
                         
                         # Send stream complete
                         await websocket.send_json({
@@ -274,8 +381,8 @@ async def generate_gemini_response_stream(user_message: str, conversation: list)
     try:
         # Format conversation history for Gemini
         prompt = "You are a helpful voice assistant with access to external tools. Keep responses concise and conversational. Start your response immediately without any preamble.\n\n"
-        prompt += "When a user asks you to create a calendar event, CREATE IT IMMEDIATELY using the tools, even if they don't provide all details. If no time is specified, use 'tomorrow at 2pm'. If no title is specified, use 'Meeting' or 'Appointment'. Never ask for more details - just create the event with sensible defaults.\n"
-        prompt += f"Today's date is {datetime.now().strftime('%Y-%m-%d')}. When creating test events, use tomorrow or a future date.\n\n"
+        prompt += "Only use tools when the user explicitly asks for an action that requires them. For example, only create calendar events when the user asks you to schedule, add, or create a meeting or appointment.\n"
+        prompt += f"Today's date is {datetime.now().strftime('%Y-%m-%d')}.\n\n"
         
         # Add available tools if MCP is connected
         if mcp_client and mcp_client.tools:
@@ -490,16 +597,20 @@ async def generate_tts_audio(text: str) -> str:
         audio_id = str(uuid.uuid4())
         audio_path = AUDIO_DIR / f"{audio_id}.mp3"
         
-        # Generate audio
-        audio = generate(
-            api_key=ELEVENLABS_API_KEY,
-            text=text,
-            voice=ELEVENLABS_VOICE_ID,
-            model="eleven_monolingual_v1"
+        # Run the blocking ElevenLabs API call in a thread pool
+        loop = asyncio.get_event_loop()
+        audio = await loop.run_in_executor(
+            None,  # Use default thread pool
+            lambda: generate(
+                api_key=ELEVENLABS_API_KEY,
+                text=text,
+                voice=ELEVENLABS_VOICE_ID,
+                model="eleven_monolingual_v1"
+            )
         )
         
-        # Save audio to file
-        save(audio, str(audio_path))
+        # Save audio to file (also in thread pool as it's I/O)
+        await loop.run_in_executor(None, save, audio, str(audio_path))
         
         # Return URL path for the audio file
         return f"/audio/{audio_id}"

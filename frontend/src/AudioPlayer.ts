@@ -12,7 +12,7 @@ export class AudioPlayer {
   }
 
   async addToQueue(url: string, text: string) {
-    console.log('Adding to audio queue:', url, 'Unlocked:', this.isUnlocked, 'Playing:', this.isPlaying);
+    console.log(`[${new Date().toISOString()}] Adding to audio queue:`, url, 'Unlocked:', this.isUnlocked, 'Playing:', this.isPlaying);
     this.queue.push({ url, text });
     
     // Try to unlock if not already unlocked
@@ -21,9 +21,12 @@ export class AudioPlayer {
     }
     
     if (!this.isPlaying && this.isUnlocked) {
+      console.log(`[${new Date().toISOString()}] Starting playback immediately`);
       this.playNext();
     } else if (!this.isUnlocked) {
       console.log('Audio not unlocked yet, waiting for user interaction');
+    } else {
+      console.log(`[${new Date().toISOString()}] Already playing, queued (queue size: ${this.queue.length})`);
     }
   }
 
@@ -39,7 +42,7 @@ export class AudioPlayer {
 
     this.isPlaying = true;
     const { url, text } = this.queue.shift()!;
-    console.log('Playing audio:', url, 'Text:', text.substring(0, 50) + '...');
+    console.log(`[${new Date().toISOString()}] Playing audio:`, url, 'Text:', text.substring(0, 50) + '...');
 
     try {
       console.log('Fetching audio from:', url);

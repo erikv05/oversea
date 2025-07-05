@@ -51,6 +51,12 @@
   font-style: italic;
 }
 
+.message.assistant.streaming {
+  opacity: 0.8;
+  background-color: #2a3f5f;
+  border-color: #4a6fa5;
+}
+
 .mic-button {
   width: 120px;
   height: 120px;
