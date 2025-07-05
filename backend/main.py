@@ -104,6 +104,11 @@ async def send_queued_audio(websocket: WebSocket, audio_queue: dict, audio_queue
         await chunks_notifier.wait()
         chunks_notifier.clear()
         
+        # Check for cancellation immediately after waking up
+        if gen_id != current_gen_id_ref():
+            print(f"Audio sender for generation {gen_id} stopping due to cancellation (after wake)")
+            return
+        
         # Process all available chunks
         while True:
             async with audio_queue_lock:
@@ -136,6 +141,11 @@ async def send_queued_audio(websocket: WebSocket, audio_queue: dict, audio_queue
                     # Next chunk not ready yet, exit inner loop
                     break
             
+            # Check for cancellation before sending
+            if gen_id != current_gen_id_ref():
+                print(f"Audio sender for generation {gen_id} stopping due to cancellation (before send)")
+                return
+                
             # Send the audio chunk (outside the lock)
             if 'sending_data' in locals():
                 try:
@@ -160,6 +170,7 @@ async def websocket_endpoint(websocket: WebSocket):
     # Track active generation tasks
     active_tasks = set()
     current_generation_id = 0
+    active_notifiers = []  # Track all chunk notifiers for interruption
     
     try:
         print("Starting message loop...")
@@ -177,6 +188,11 @@ async def websocket_endpoint(websocket: WebSocket):
                         task.cancel()
                 active_tasks.clear()
                 current_generation_id += 1  # Increment ID to invalidate old responses
+                
+                # Wake up all audio senders so they can check cancellation
+                for notifier in active_notifiers:
+                    notifier.set()
+                active_notifiers.clear()
                 
             elif data.get("type") == "message":
                 user_message = data["content"]
@@ -199,7 +215,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 generation_id = current_generation_id
                 
                 # Create a task for the streaming response
-                async def stream_response(gen_id: int):
+                async def stream_response(gen_id: int, notifiers_list: list):
                     # Check if this generation is still current
                     if gen_id != current_generation_id:
                         print(f"Generation {gen_id} cancelled before starting")
@@ -218,6 +234,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     chunk_counter = 0  # Counter for chunk indices
                     total_chunks = [None]  # Will be set when we know total chunks (list for mutability)
                     chunks_notifier = asyncio.Event()  # Event to notify when chunks are ready
+                    notifiers_list.append(chunks_notifier)  # Track this notifier for interruption
                     
                     # Start the audio sender task
                     audio_sender_task = asyncio.create_task(
@@ -353,9 +370,13 @@ async def websocket_endpoint(websocket: WebSocket):
                             "interrupted": True
                         })
                         raise
+                    finally:
+                        # Clean up notifier
+                        if chunks_notifier in notifiers_list:
+                            notifiers_list.remove(chunks_notifier)
                 
                 # Run the streaming in a task so it can be cancelled
-                stream_task = asyncio.create_task(stream_response(generation_id))
+                stream_task = asyncio.create_task(stream_response(generation_id, active_notifiers))
                 active_tasks.add(stream_task)
                 stream_task.add_done_callback(lambda t: active_tasks.discard(t))
                 

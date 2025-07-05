@@ -110,6 +110,11 @@ function App() {
             break
           }
           
+          // Reset audio player for new response
+          if (audioPlayerRef.current) {
+            audioPlayerRef.current.reset()
+          }
+          
           // Add user message to conversation now that we're sure about it
           const userMessage = pendingResponseRef.current
           setConversation(prev => {
@@ -410,18 +415,18 @@ function App() {
       clearTimeout(silenceTimerRef.current)
       silenceTimerRef.current = null
     }
-    // Stop audio player
+    // Reset audio player
     if (audioPlayerRef.current) {
-      audioPlayerRef.current.stop()
+      audioPlayerRef.current.reset()
     }
   }
 
   const interruptAI = () => {
     console.log('Interrupting AI...')
     
-    // Stop current audio
+    // Reset audio player for new conversation turn
     if (audioPlayerRef.current) {
-      audioPlayerRef.current.stop()
+      audioPlayerRef.current.reset()
     }
     
     // Cancel current LLM generation
@@ -458,7 +463,7 @@ function App() {
         audioRef.current = null
       }
       if (audioPlayerRef.current) {
-        audioPlayerRef.current.stop()
+        audioPlayerRef.current.reset()
       }
     } else {
       // Turn on - start continuous conversation
