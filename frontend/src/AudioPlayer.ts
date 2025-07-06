@@ -1,99 +1,156 @@
-// Audio player with Safari-compatible playback
+// Real-time audio streaming player for voice calls
 export class AudioPlayer {
   private audioContext: AudioContext | null = null;
   private isUnlocked = false;
-  private queue: Array<{ url: string; text: string }> = [];
-  private isPlaying = false;
+  private activeSources: Set<AudioBufferSourceNode> = new Set();
   private onComplete: (() => void) | null = null;
+  private playbackQueue: Array<{ url: string; text: string }> = [];
+  private isProcessingQueue = false;
+  private currentGeneration = 0; // Track generation to ignore old audio
 
   constructor() {
     console.log('AudioPlayer constructor called');
-    // We'll initialize audio context when unlock() is called
+  }
+
+  // Reset the player for a new conversation turn
+  reset() {
+    this.currentGeneration++;
+    console.log(`[AudioPlayer] Reset called, new generation: ${this.currentGeneration}`);
+    
+    // Stop all active audio sources immediately
+    this.stopAllAudio();
+    
+    // Clear the queue
+    this.playbackQueue = [];
+    this.isProcessingQueue = false;
+  }
+
+  private stopAllAudio() {
+    console.log(`[AudioPlayer] Stopping ${this.activeSources.size} active audio sources`);
+    
+    // Stop and disconnect all active sources
+    for (const source of this.activeSources) {
+      try {
+        source.stop();
+        source.disconnect();
+      } catch (e) {
+        // Source might have already ended
+      }
+    }
+    this.activeSources.clear();
   }
 
   async addToQueue(url: string, text: string) {
-    console.log('Adding to audio queue:', url, 'Unlocked:', this.isUnlocked, 'Playing:', this.isPlaying);
-    this.queue.push({ url, text });
+    const generation = this.currentGeneration;
+    console.log(`[AudioPlayer] Adding to queue - Generation: ${generation}, URL: ${url}`);
     
     // Try to unlock if not already unlocked
     if (!this.isUnlocked) {
       this.unlock();
     }
     
-    if (!this.isPlaying && this.isUnlocked) {
-      this.playNext();
-    } else if (!this.isUnlocked) {
-      console.log('Audio not unlocked yet, waiting for user interaction');
+    this.playbackQueue.push({ url, text });
+    
+    // Process queue if not already processing
+    if (!this.isProcessingQueue && this.isUnlocked) {
+      this.processQueue(generation);
     }
   }
 
-  private async playNext() {
-    if (this.queue.length === 0) {
-      console.log('Queue empty, stopping playback');
-      this.isPlaying = false;
+  private async processQueue(generation: number) {
+    if (this.isProcessingQueue) return;
+    
+    this.isProcessingQueue = true;
+    console.log(`[AudioPlayer] Starting queue processing for generation ${generation}`);
+    
+    while (this.playbackQueue.length > 0) {
+      // Check if we should stop (new generation started)
+      if (generation !== this.currentGeneration) {
+        console.log(`[AudioPlayer] Generation mismatch (${generation} vs ${this.currentGeneration}), stopping queue processing`);
+        break;
+      }
+      
+      const item = this.playbackQueue.shift()!;
+      
+      try {
+        await this.playAudio(item.url, item.text, generation);
+      } catch (error) {
+        console.error('[AudioPlayer] Error playing audio:', error);
+        // Continue with next item on error
+      }
+    }
+    
+    this.isProcessingQueue = false;
+    
+    // Check if this was the last audio for this generation
+    if (generation === this.currentGeneration && this.playbackQueue.length === 0 && this.activeSources.size === 0) {
+      console.log('[AudioPlayer] All audio finished for current generation');
       if (this.onComplete) {
         this.onComplete();
       }
+    }
+  }
+
+  private async playAudio(url: string, text: string, generation: number): Promise<void> {
+    // Double-check generation before playing
+    if (generation !== this.currentGeneration) {
+      console.log(`[AudioPlayer] Skipping outdated audio from generation ${generation}`);
       return;
     }
 
-    this.isPlaying = true;
-    const { url, text } = this.queue.shift()!;
-    console.log('Playing audio:', url, 'Text:', text.substring(0, 50) + '...');
-
+    console.log(`[AudioPlayer] Playing audio: ${url} (${text.substring(0, 50)}...)`);
+    
     try {
-      console.log('Fetching audio from:', url);
-      const response = await fetch(url, {
-        mode: 'cors',
-        credentials: 'same-origin'
-      });
+      // Fetch audio
+      const response = await fetch(url);
+      if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
       
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
+      const arrayBuffer = await response.arrayBuffer();
+      
+      // Check generation again after async operation
+      if (generation !== this.currentGeneration) {
+        console.log(`[AudioPlayer] Generation changed during fetch, skipping playback`);
+        return;
       }
       
-      console.log('Audio fetch successful, decoding...');
-      const arrayBuffer = await response.arrayBuffer();
-      console.log('ArrayBuffer size:', arrayBuffer.byteLength);
-      
       if (!this.audioContext) {
-        console.error('AudioContext is null, creating new one');
         const AudioContextClass = (window as any).AudioContext || (window as any).webkitAudioContext;
         this.audioContext = new AudioContextClass();
       }
       
       if (this.audioContext.state !== 'running') {
-        console.warn('AudioContext state is:', this.audioContext.state);
         await this.audioContext.resume();
       }
       
       const audioBuffer = await this.audioContext.decodeAudioData(arrayBuffer);
-      console.log('Audio decoded successfully, duration:', audioBuffer.duration, 'seconds');
+      
+      // Final generation check before playing
+      if (generation !== this.currentGeneration) {
+        console.log(`[AudioPlayer] Generation changed during decode, skipping playback`);
+        return;
+      }
       
       const source = this.audioContext.createBufferSource();
       source.buffer = audioBuffer;
       source.connect(this.audioContext.destination);
       
-      source.onended = () => {
-        console.log('Audio chunk finished playing');
-        this.playNext();
-      };
+      // Track this source
+      this.activeSources.add(source);
       
-      console.log('Starting audio playback...');
-      source.start(0);
-      console.log('Audio playback started successfully');
-    } catch (error) {
-      console.error('Error playing audio:', error);
-      console.error('Error details:', {
-        message: (error as Error).message,
-        stack: (error as Error).stack,
-        audioContext: this.audioContext ? {
-          state: this.audioContext.state,
-          sampleRate: this.audioContext.sampleRate
-        } : 'null'
+      // Create a promise that resolves when playback ends
+      return new Promise<void>((resolve) => {
+        source.onended = () => {
+          console.log('[AudioPlayer] Audio chunk finished');
+          this.activeSources.delete(source);
+          resolve();
+        };
+        
+        source.start(0);
       });
-      // Continue with next chunk on error
-      setTimeout(() => this.playNext(), 100);
+      
+    } catch (error) {
+      console.error('[AudioPlayer] Error in playAudio:', error);
+      throw error;
     }
   }
 
@@ -101,24 +158,28 @@ export class AudioPlayer {
     this.onComplete = callback;
   }
 
+  isPlaying(): boolean {
+    return this.activeSources.size > 0 || this.isProcessingQueue;
+  }
+
   stop() {
-    this.queue = [];
-    this.isPlaying = false;
+    console.log('[AudioPlayer] Stop called');
+    this.reset();
   }
 
   unlock() {
-    console.log('unlock() called');
+    console.log('[AudioPlayer] Unlock called');
     
     if (!this.audioContext) {
       const AudioContextClass = (window as any).AudioContext || (window as any).webkitAudioContext;
       this.audioContext = new AudioContextClass();
-      console.log('Created new AudioContext, state:', this.audioContext.state);
+      console.log('[AudioPlayer] Created AudioContext, state:', this.audioContext.state);
     }
     
     // Safari workaround: Play a silent buffer to unlock
     const isSafari = /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
     if (isSafari && this.audioContext.state === 'suspended') {
-      console.log('Safari detected, playing silent buffer to unlock');
+      console.log('[AudioPlayer] Safari detected, playing silent buffer');
       const buffer = this.audioContext.createBuffer(1, 1, 22050);
       const source = this.audioContext.createBufferSource();
       source.buffer = buffer;
@@ -129,20 +190,15 @@ export class AudioPlayer {
     // Always try to resume
     this.audioContext.resume().then(() => {
       this.isUnlocked = true;
-      console.log('AudioContext resumed, state:', this.audioContext.state);
+      console.log('[AudioPlayer] AudioContext resumed, state:', this.audioContext!.state);
       
       // Process any queued audio
-      if (this.queue.length > 0 && !this.isPlaying) {
-        console.log('Starting queued audio after unlock, queue length:', this.queue.length);
-        this.playNext();
+      if (this.playbackQueue.length > 0 && !this.isProcessingQueue) {
+        this.processQueue(this.currentGeneration);
       }
     }).catch(e => {
-      console.error('Failed to unlock audio context:', e);
-      // Even if resume fails, mark as unlocked and try to play
+      console.error('[AudioPlayer] Failed to unlock:', e);
       this.isUnlocked = true;
-      if (this.queue.length > 0 && !this.isPlaying) {
-        this.playNext();
-      }
     });
   }
 }

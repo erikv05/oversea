@@ -42,4 +42,7 @@ temp_audio/
 htmlcov/
 
 # OS
-Thumbs.db
+Thumbs.db.claude/
+
+# AI
+.claude/
