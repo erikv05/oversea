@@ -7,3 +7,4 @@ python-dotenv==1.0.0
 aiofiles==23.2.1
 pydantic==2.5.2
 httpx==0.25.2
+google-cloud-speech==2.21.0

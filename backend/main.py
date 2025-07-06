@@ -9,12 +9,17 @@ import tempfile
 from pathlib import Path
 from dotenv import load_dotenv
 import google.generativeai as genai
+from google.cloud import speech
+from google.oauth2 import service_account
 from elevenlabs import generate, save, stream
 import uuid
 import re
 import io
 import time
 from mcp_client import MCPClient
+import queue
+import threading
+from typing import Optional, AsyncGenerator
 
 # Global semaphore for TTS rate limiting (max 3 concurrent requests)
 TTS_SEMAPHORE = asyncio.Semaphore(3)
@@ -36,11 +41,21 @@ app.add_middleware(
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
-    print(GEMINI_API_KEY)
-    model = genai.GenerativeModel('gemini-2.5-flash')
+    print(f"Gemini API Key configured")
+    model = genai.GenerativeModel('gemini-2.0-flash-exp')
 else:
     print("Warning: GEMINI_API_KEY not found in environment variables")
     model = None
+
+# Configure Google Cloud Speech-to-Text
+GOOGLE_CLOUD_CREDENTIALS = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "path/to/your/service-account-key.json")
+if os.path.exists(GOOGLE_CLOUD_CREDENTIALS):
+    credentials = service_account.Credentials.from_service_account_file(GOOGLE_CLOUD_CREDENTIALS)
+    speech_client = speech.SpeechClient(credentials=credentials)
+    print(f"Google Cloud Speech client initialized with credentials from {GOOGLE_CLOUD_CREDENTIALS}")
+else:
+    print(f"Warning: Google Cloud credentials file not found at {GOOGLE_CLOUD_CREDENTIALS}")
+    speech_client = None
 
 # Configure ElevenLabs API
 ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY")
@@ -56,7 +71,177 @@ mcp_client = None
 
 @app.get("/")
 def read_root():
-    return {"message": "Voice Agent API"}
+    return {"message": "Voice Agent API with Google Cloud STT"}
+
+class AudioStreamHandler:
+    """Handles streaming audio to Google Cloud STT and processing responses"""
+    
+    def __init__(self, websocket: WebSocket, loop: asyncio.AbstractEventLoop):
+        self.websocket = websocket
+        self.loop = loop
+        self.audio_queue = queue.Queue()
+        self.transcript_queue = asyncio.Queue()
+        self.is_running = True
+        self.current_sentence = ""
+        self.speech_thread = None
+        self.last_speech_time = time.time()
+        self.pending_transcript = ""
+        self.silence_threshold = 1.0  # 1 second of silence triggers response
+        
+    async def start(self):
+        """Start the audio processing thread"""
+        self.speech_thread = threading.Thread(target=self._process_audio_stream)
+        self.speech_thread.daemon = True
+        self.speech_thread.start()
+        
+        # Start silence detection thread
+        self.silence_thread = threading.Thread(target=self._monitor_silence)
+        self.silence_thread.daemon = True
+        self.silence_thread.start()
+        
+    def stop(self):
+        """Stop audio processing"""
+        self.is_running = False
+        self.audio_queue.put(None)  # Signal thread to stop
+        if self.speech_thread:
+            self.speech_thread.join(timeout=1)
+            
+    def add_audio(self, audio_data: bytes):
+        """Add audio data to the processing queue"""
+        if self.is_running:
+            self.audio_queue.put(audio_data)
+            
+    async def get_transcript(self) -> Optional[str]:
+        """Get the next complete sentence transcript"""
+        try:
+            return await asyncio.wait_for(self.transcript_queue.get(), timeout=0.1)
+        except asyncio.TimeoutError:
+            return None
+            
+    def _process_audio_stream(self):
+        """Process audio stream in a separate thread (Google STT requirement)"""
+        if not speech_client:
+            print("Speech client not initialized")
+            return
+            
+        # Configure audio stream recognition
+        config = speech.RecognitionConfig(
+            encoding=speech.RecognitionConfig.AudioEncoding.LINEAR16,
+            sample_rate_hertz=8000,  # 8kHz as requested
+            language_code="en-US",
+            enable_automatic_punctuation=True,
+            model="latest_short",  # Optimized for short utterances
+            use_enhanced=True,  # Better accuracy
+        )
+        
+        streaming_config = speech.StreamingRecognitionConfig(
+            config=config,
+            interim_results=True,  # Get partial results
+            single_utterance=False,  # Continue listening
+        )
+        
+        # Audio generator that yields chunks from the queue
+        def audio_generator():
+            while self.is_running:
+                chunk = self.audio_queue.get()
+                if chunk is None:
+                    break
+                yield speech.StreamingRecognizeRequest(audio_content=chunk)
+        
+        try:
+            # Start streaming recognition
+            responses = speech_client.streaming_recognize(
+                streaming_config, 
+                audio_generator()
+            )
+            
+            # Process responses
+            for response in responses:
+                if not self.is_running:
+                    break
+                    
+                for result in response.results:
+                    transcript = result.alternatives[0].transcript
+                    
+                    if result.is_final:
+                        # Final result - add to pending transcript
+                        self.pending_transcript += " " + transcript
+                        self.last_speech_time = time.time()
+                        
+                        # Send the accumulated transcript for display
+                        asyncio.run_coroutine_threadsafe(
+                            self.websocket.send_json({
+                                "type": "interim_transcript",
+                                "text": self.pending_transcript.strip()
+                            }),
+                            self.loop
+                        )
+                    else:
+                        # Interim result - update display with full pending + interim
+                        if transcript.strip():
+                            self.last_speech_time = time.time()
+                            # Show accumulated text plus current interim
+                            display_text = (self.pending_transcript + " " + transcript).strip()
+                            asyncio.run_coroutine_threadsafe(
+                                self.websocket.send_json({
+                                    "type": "interim_transcript",
+                                    "text": display_text
+                                }),
+                                self.loop
+                            )
+                            
+        except Exception as e:
+            print(f"Error in speech recognition: {e}")
+            
+    def _extract_complete_sentences(self, text: str) -> list[str]:
+        """Extract complete sentences from text buffer"""
+        sentences = []
+        
+        # Split by sentence endings
+        parts = re.split(r'([.!?]\s+)', text)
+        
+        # Reconstruct complete sentences
+        i = 0
+        while i < len(parts) - 1:
+            if i + 1 < len(parts) and re.match(r'[.!?]\s+', parts[i + 1]):
+                sentence = parts[i] + parts[i + 1].strip()
+                sentences.append(sentence)
+                i += 2
+            else:
+                i += 1
+                
+        # Update buffer with remaining text
+        if i < len(parts):
+            self.current_sentence = parts[i]
+        else:
+            self.current_sentence = ""
+            
+        return sentences
+    
+    def _monitor_silence(self):
+        """Monitor for silence and trigger response when user stops speaking"""
+        while self.is_running:
+            try:
+                # Check if we have pending transcript and enough silence
+                if self.pending_transcript.strip():
+                    silence_duration = time.time() - self.last_speech_time
+                    if silence_duration >= self.silence_threshold:
+                        # User has stopped speaking, process the full transcript
+                        full_transcript = self.pending_transcript.strip()
+                        print(f"Silence detected after {silence_duration:.1f}s, processing: {full_transcript}")
+                        
+                        # Put the complete transcript in the queue
+                        asyncio.run_coroutine_threadsafe(
+                            self.transcript_queue.put(full_transcript),
+                            self.loop
+                        )
+                        
+                        # Clear pending transcript
+                        self.pending_transcript = ""
+                        
+                time.sleep(0.1)  # Check every 100ms
+            except Exception as e:
+                print(f"Error in silence monitor: {e}")
 
 async def generate_and_queue_tts(websocket: WebSocket, text: str, gen_id: int, current_gen_id_ref, 
                                 chunk_index: int, audio_queue: dict, audio_queue_lock: asyncio.Lock,
@@ -160,238 +345,6 @@ async def send_queued_audio(websocket: WebSocket, audio_queue: dict, audio_queue
         if gen_id != current_gen_id_ref():
             print(f"Audio sender for generation {gen_id} stopping due to cancellation")
             return
-
-@app.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket):
-    print(f"WebSocket connection attempt from {websocket.client}")
-    await websocket.accept()
-    print("WebSocket connection accepted")
-    
-    # Track active generation tasks
-    active_tasks = set()
-    current_generation_id = 0
-    active_notifiers = []  # Track all chunk notifiers for interruption
-    
-    try:
-        print("Starting message loop...")
-        while True:
-            # Receive message from client
-            print("Waiting for message...")
-            data = await websocket.receive_json()
-            print(f"Received: {data}")
-            
-            if data.get("type") == "interrupt":
-                # Cancel all active tasks
-                print(f"Interruption received, cancelling {len(active_tasks)} active tasks...")
-                for task in active_tasks:
-                    if not task.done():
-                        task.cancel()
-                active_tasks.clear()
-                current_generation_id += 1  # Increment ID to invalidate old responses
-                
-                # Wake up all audio senders so they can check cancellation
-                for notifier in active_notifiers:
-                    notifier.set()
-                active_notifiers.clear()
-                
-            elif data.get("type") == "message":
-                user_message = data["content"]
-                conversation = data.get("conversation", [])
-                
-                print(f"\n=== Received message ===")
-                print(f"User message: {user_message}")
-                print(f"Conversation history ({len(conversation)} messages):")
-                for i, msg in enumerate(conversation):
-                    print(f"  {i}: {msg['role']}: {msg['content'][:50]}...")
-                print("========================\n")
-                
-                # Start streaming response
-                await websocket.send_json({
-                    "type": "stream_start"
-                })
-                
-                # Increment generation ID for this response
-                current_generation_id += 1
-                generation_id = current_generation_id
-                
-                # Create a task for the streaming response
-                async def stream_response(gen_id: int, notifiers_list: list):
-                    # Check if this generation is still current
-                    if gen_id != current_generation_id:
-                        print(f"Generation {gen_id} cancelled before starting")
-                        return
-                        
-                    # Buffer for accumulating text chunks
-                    text_buffer = ""
-                    full_response = ""
-                    complete_sentences = []  # Store complete sentences
-                    sentences_processed = 0  # Track sentences already processed for TTS
-                    
-                    # Audio queue to maintain order
-                    audio_queue = {}  # chunk_index -> (audio_url, text) or None
-                    next_audio_to_send = [0]  # Track which audio chunk to send next (list for mutability)
-                    audio_queue_lock = asyncio.Lock()
-                    chunk_counter = 0  # Counter for chunk indices
-                    total_chunks = [None]  # Will be set when we know total chunks (list for mutability)
-                    chunks_notifier = asyncio.Event()  # Event to notify when chunks are ready
-                    notifiers_list.append(chunks_notifier)  # Track this notifier for interruption
-                    
-                    # Start the audio sender task
-                    audio_sender_task = asyncio.create_task(
-                        send_queued_audio(websocket, audio_queue, audio_queue_lock, 
-                                        next_audio_to_send, generation_id, lambda: current_generation_id,
-                                        total_chunks, chunks_notifier)
-                    )
-                    active_tasks.add(audio_sender_task)
-                    audio_sender_task.add_done_callback(lambda t: active_tasks.discard(t))
-                    
-                    try:
-                        async for text_chunk in generate_gemini_response_stream(user_message, conversation):
-                            # Check if cancelled
-                            if gen_id != current_generation_id:
-                                print(f"Generation {gen_id} cancelled during streaming")
-                                raise asyncio.CancelledError()
-                                
-                            text_buffer += text_chunk
-                            full_response += text_chunk
-                    
-                            # Send text chunk immediately
-                            await websocket.send_json({
-                                "type": "text_chunk",
-                                "text": text_chunk,
-                                "timestamp": time.time()
-                            })
-                            print(f"[{time.time():.2f}] Sent text chunk: {text_chunk[:30]}...")
-                            
-                            # Log progress every 10 characters to reduce noise
-                            if len(full_response) % 10 == 0:
-                                print(f"Progress: {len(full_response)} chars, {len(complete_sentences)} sentences complete, {sentences_processed} processed")
-                            
-                            # Skip TTS for tool calls
-                            if '```tool' in text_buffer:
-                                # Don't process tool calls as sentences
-                                continue
-                            
-                            # Check for complete sentences (ending with . ! ?)
-                            # Split but keep the delimiter
-                            parts = re.split(r'([.!?]\s+)', text_buffer)
-                    
-                            # Reconstruct complete sentences
-                            current_sentences = []
-                            i = 0
-                            while i < len(parts) - 1:
-                                if i + 1 < len(parts) and re.match(r'[.!?]\s+', parts[i + 1]):
-                                    # Complete sentence found
-                                    sentence = parts[i] + parts[i + 1].strip()
-                                    current_sentences.append(sentence)
-                                    i += 2
-                                else:
-                                    i += 1
-                            
-                            # Update text buffer with remaining incomplete sentence
-                            if i < len(parts):
-                                text_buffer = parts[i]
-                            else:
-                                text_buffer = ""
-                            
-                            # Add new complete sentences to our list
-                            complete_sentences.extend(current_sentences)
-                            
-                            # Process sentences with optimized chunking for minimal latency
-                            while len(complete_sentences) - sentences_processed >= 1:
-                                # For the very first sentence, always process it alone for fastest time to first token
-                                if sentences_processed == 0:
-                                    # Process first sentence individually
-                                    chunk_sentences = complete_sentences[sentences_processed:sentences_processed + 1]
-                                    sentences_processed += 1
-                                # After first sentence, process in 2-sentence chunks when possible
-                                elif len(complete_sentences) - sentences_processed >= 2:
-                                    # Process 2 sentences if available
-                                    chunk_sentences = complete_sentences[sentences_processed:sentences_processed + 2]
-                                    sentences_processed += 2
-                                else:
-                                    # Process single sentence if that's all we have left
-                                    chunk_sentences = complete_sentences[sentences_processed:sentences_processed + 1]
-                                    sentences_processed += 1
-                                chunk_text = ' '.join(chunk_sentences)
-                                
-                                if chunk_text.strip() and ELEVENLABS_API_KEY:
-                                    # Check if still current before generating TTS
-                                    if gen_id == current_generation_id:
-                                        print(f"[{time.time():.2f}] Generating TTS for chunk {chunk_counter}: {chunk_text[:50]}...")
-                                        # Run TTS generation in background to not block streaming
-                                        tts_task = asyncio.create_task(
-                                            generate_and_queue_tts(websocket, chunk_text, gen_id, lambda: current_generation_id,
-                                                                 chunk_counter, audio_queue, audio_queue_lock, chunks_notifier)
-                                        )
-                                        active_tasks.add(tts_task)
-                                        tts_task.add_done_callback(lambda t: active_tasks.discard(t))
-                                        chunk_counter += 1
-                                        print(f"[{time.time():.2f}] TTS task created for chunk {chunk_counter-1}, {len(active_tasks)} active tasks")
-                        
-                        # Add any remaining text buffer as a final sentence (unless it's a tool call)
-                        if text_buffer.strip() and '```tool' not in text_buffer:
-                            complete_sentences.append(text_buffer)
-                        
-                        # Process any remaining unprocessed sentences
-                        remaining_sentences = complete_sentences[sentences_processed:]
-                        if remaining_sentences and ELEVENLABS_API_KEY:
-                            # Process remaining sentences (could be 1 or 2)
-                            chunk_text = ' '.join(remaining_sentences)
-                            if chunk_text.strip() and '```tool' not in chunk_text:
-                                print(f"[{time.time():.2f}] Generating TTS for final chunk {chunk_counter}: {chunk_text[:50]}...")
-                                tts_task = asyncio.create_task(
-                                    generate_and_queue_tts(websocket, chunk_text, gen_id, lambda: current_generation_id,
-                                                         chunk_counter, audio_queue, audio_queue_lock, chunks_notifier)
-                                )
-                                active_tasks.add(tts_task)
-                                tts_task.add_done_callback(lambda t: active_tasks.discard(t))
-                                chunk_counter += 1
-                        
-                        # Signal end of audio chunks
-                        async with audio_queue_lock:
-                            total_chunks[0] = chunk_counter
-                            print(f"[{time.time():.2f}] Total chunks to send: {chunk_counter}")
-                        
-                        # Notify audio sender that we're done generating chunks
-                        chunks_notifier.set()
-                        
-                        # Send stream complete
-                        await websocket.send_json({
-                            "type": "stream_complete",
-                            "full_text": full_response
-                        })
-                    except asyncio.CancelledError:
-                        print("Stream cancelled due to interruption")
-                        # Send partial response complete
-                        await websocket.send_json({
-                            "type": "stream_complete",
-                            "full_text": full_response,
-                            "interrupted": True
-                        })
-                        raise
-                    finally:
-                        # Clean up notifier
-                        if chunks_notifier in notifiers_list:
-                            notifiers_list.remove(chunks_notifier)
-                
-                # Run the streaming in a task so it can be cancelled
-                stream_task = asyncio.create_task(stream_response(generation_id, active_notifiers))
-                active_tasks.add(stream_task)
-                stream_task.add_done_callback(lambda t: active_tasks.discard(t))
-                
-                # Wait for the task to complete
-                try:
-                    await stream_task
-                except asyncio.CancelledError:
-                    print("Main stream task cancelled")
-                
-    except WebSocketDisconnect:
-        print("Client disconnected normally")
-    except Exception as e:
-        print(f"WebSocket error: {type(e).__name__}: {e}")
-        import traceback
-        traceback.print_exc()
 
 async def generate_gemini_response_stream(user_message: str, conversation: list):
     """Generate streaming response using Google Gemini API"""
@@ -529,17 +482,14 @@ async def generate_gemini_response_stream(user_message: str, conversation: list)
                         yield buffer
                         buffer = ""
                 else:
-                    # No tool call found, yield text up to last newline
+                    # No tool call found, yield text immediately for smoother streaming
                     # But first check if we might be in the middle of a tool call
                     if '```tool' in buffer and '```' not in buffer[buffer.find('```tool') + 7:]:
                         # We're in the middle of a tool call, don't yield yet
                         continue
                     
-                    last_newline = buffer.rfind('\n')
-                    if last_newline > -1:
-                        yield buffer[:last_newline + 1]
-                        buffer = buffer[last_newline + 1:]
-                    elif len(buffer) > 100:  # Prevent buffer from growing too large
+                    # Yield the entire buffer for smoother streaming
+                    if buffer:
                         yield buffer
                         buffer = ""
         
@@ -639,6 +589,266 @@ async def generate_tts_audio(text: str) -> str:
     except Exception as e:
         print(f"Error generating TTS audio: {str(e)}")
         return None
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    print(f"WebSocket connection attempt from {websocket.client}")
+    await websocket.accept()
+    print("WebSocket connection accepted")
+    
+    # Initialize audio stream handler with current event loop
+    loop = asyncio.get_event_loop()
+    audio_handler = AudioStreamHandler(websocket, loop)
+    await audio_handler.start()
+    
+    # Track active generation tasks
+    active_tasks = set()
+    current_generation_id = 0
+    active_notifiers = []  # Track all chunk notifiers for interruption
+    
+    # Track conversation
+    conversation = []
+    
+    try:
+        print("Starting message loop...")
+        while True:
+            # Receive message from client (could be JSON or binary audio)
+            message = await websocket.receive()
+            
+            if "text" in message:
+                # JSON message
+                data = json.loads(message["text"])
+                print(f"Received: {data}")
+                
+                if data.get("type") == "audio_config":
+                    # Client is configuring audio settings
+                    print(f"Audio config received: {data}")
+                    
+                elif data.get("type") == "interrupt":
+                    # Cancel all active tasks
+                    print(f"Interruption received, cancelling {len(active_tasks)} active tasks...")
+                    for task in active_tasks:
+                        if not task.done():
+                            task.cancel()
+                    active_tasks.clear()
+                    current_generation_id += 1  # Increment ID to invalidate old responses
+                    
+                    # Wake up all audio senders so they can check cancellation
+                    for notifier in active_notifiers:
+                        notifier.set()
+                    active_notifiers.clear()
+                    
+            elif "bytes" in message:
+                # Binary audio data
+                audio_data = message["bytes"]
+                audio_handler.add_audio(audio_data)
+                
+                # Check for complete sentences
+                sentence = await audio_handler.get_transcript()
+                if sentence:
+                    print(f"Complete sentence: {sentence}")
+                    
+                    # Add to conversation
+                    conversation.append({"role": "user", "content": sentence})
+                    
+                    # Send sentence to client for display
+                    await websocket.send_json({
+                        "type": "user_transcript",
+                        "text": sentence
+                    })
+                    
+                    # Start streaming response
+                    await websocket.send_json({
+                        "type": "stream_start"
+                    })
+                    
+                    # Increment generation ID for this response
+                    current_generation_id += 1
+                    generation_id = current_generation_id
+                    
+                    # Create a task for the streaming response
+                    async def stream_response(gen_id: int, notifiers_list: list, user_message: str):
+                        # Check if this generation is still current
+                        if gen_id != current_generation_id:
+                            print(f"Generation {gen_id} cancelled before starting")
+                            return
+                            
+                        # Buffer for accumulating text chunks
+                        text_buffer = ""
+                        full_response = ""
+                        complete_sentences = []  # Store complete sentences
+                        sentences_processed = 0  # Track sentences already processed for TTS
+                        
+                        # Audio queue to maintain order
+                        audio_queue = {}  # chunk_index -> (audio_url, text) or None
+                        next_audio_to_send = [0]  # Track which audio chunk to send next (list for mutability)
+                        audio_queue_lock = asyncio.Lock()
+                        chunk_counter = 0  # Counter for chunk indices
+                        total_chunks = [None]  # Will be set when we know total chunks (list for mutability)
+                        chunks_notifier = asyncio.Event()  # Event to notify when chunks are ready
+                        notifiers_list.append(chunks_notifier)  # Track this notifier for interruption
+                        
+                        # Start the audio sender task
+                        audio_sender_task = asyncio.create_task(
+                            send_queued_audio(websocket, audio_queue, audio_queue_lock, 
+                                            next_audio_to_send, generation_id, lambda: current_generation_id,
+                                            total_chunks, chunks_notifier)
+                        )
+                        active_tasks.add(audio_sender_task)
+                        audio_sender_task.add_done_callback(lambda t: active_tasks.discard(t))
+                        
+                        try:
+                            async for text_chunk in generate_gemini_response_stream(user_message, conversation):
+                                # Check if cancelled
+                                if gen_id != current_generation_id:
+                                    print(f"Generation {gen_id} cancelled during streaming")
+                                    raise asyncio.CancelledError()
+                                    
+                                text_buffer += text_chunk
+                                full_response += text_chunk
+                        
+                                # Send text chunk immediately
+                                await websocket.send_json({
+                                    "type": "text_chunk",
+                                    "text": text_chunk,
+                                    "timestamp": time.time()
+                                })
+                                print(f"[{time.time():.2f}] Sent text chunk: {text_chunk[:30]}...")
+                                
+                                # Log progress every 10 characters to reduce noise
+                                if len(full_response) % 10 == 0:
+                                    print(f"Progress: {len(full_response)} chars, {len(complete_sentences)} sentences complete, {sentences_processed} processed")
+                                
+                                # Skip TTS for tool calls
+                                if '```tool' in text_buffer:
+                                    # Don't process tool calls as sentences
+                                    continue
+                                
+                                # Check for complete sentences (ending with . ! ?)
+                                # Split but keep the delimiter
+                                parts = re.split(r'([.!?]\s+)', text_buffer)
+                        
+                                # Reconstruct complete sentences
+                                current_sentences = []
+                                i = 0
+                                while i < len(parts) - 1:
+                                    if i + 1 < len(parts) and re.match(r'[.!?]\s+', parts[i + 1]):
+                                        # Complete sentence found
+                                        complete_sent = parts[i] + parts[i + 1].strip()
+                                        current_sentences.append(complete_sent)
+                                        i += 2
+                                    else:
+                                        i += 1
+                                
+                                # Update text buffer with remaining incomplete sentence
+                                if i < len(parts):
+                                    text_buffer = parts[i]
+                                else:
+                                    text_buffer = ""
+                                
+                                # Add new complete sentences to our list
+                                complete_sentences.extend(current_sentences)
+                                
+                                # Process sentences with optimized chunking for minimal latency
+                                while len(complete_sentences) - sentences_processed >= 1:
+                                    # For the very first sentence, always process it alone for fastest time to first token
+                                    if sentences_processed == 0:
+                                        # Process first sentence individually
+                                        chunk_sentences = complete_sentences[sentences_processed:sentences_processed + 1]
+                                        sentences_processed += 1
+                                    # After first sentence, process in 2-sentence chunks when possible
+                                    elif len(complete_sentences) - sentences_processed >= 2:
+                                        # Process 2 sentences if available
+                                        chunk_sentences = complete_sentences[sentences_processed:sentences_processed + 2]
+                                        sentences_processed += 2
+                                    else:
+                                        # Process single sentence if that's all we have left
+                                        chunk_sentences = complete_sentences[sentences_processed:sentences_processed + 1]
+                                        sentences_processed += 1
+                                    chunk_text = ' '.join(chunk_sentences)
+                                    
+                                    if chunk_text.strip() and ELEVENLABS_API_KEY:
+                                        # Check if still current before generating TTS
+                                        if gen_id == current_generation_id:
+                                            print(f"[{time.time():.2f}] Generating TTS for chunk {chunk_counter}: {chunk_text[:50]}...")
+                                            # Run TTS generation in background to not block streaming
+                                            tts_task = asyncio.create_task(
+                                                generate_and_queue_tts(websocket, chunk_text, gen_id, lambda: current_generation_id,
+                                                                     chunk_counter, audio_queue, audio_queue_lock, chunks_notifier)
+                                            )
+                                            active_tasks.add(tts_task)
+                                            tts_task.add_done_callback(lambda t: active_tasks.discard(t))
+                                            chunk_counter += 1
+                                            print(f"[{time.time():.2f}] TTS task created for chunk {chunk_counter-1}, {len(active_tasks)} active tasks")
+                            
+                            # Add any remaining text buffer as a final sentence (unless it's a tool call)
+                            if text_buffer.strip() and '```tool' not in text_buffer:
+                                complete_sentences.append(text_buffer)
+                            
+                            # Process any remaining unprocessed sentences
+                            remaining_sentences = complete_sentences[sentences_processed:]
+                            if remaining_sentences and ELEVENLABS_API_KEY:
+                                # Process remaining sentences (could be 1 or 2)
+                                chunk_text = ' '.join(remaining_sentences)
+                                if chunk_text.strip() and '```tool' not in chunk_text:
+                                    print(f"[{time.time():.2f}] Generating TTS for final chunk {chunk_counter}: {chunk_text[:50]}...")
+                                    tts_task = asyncio.create_task(
+                                        generate_and_queue_tts(websocket, chunk_text, gen_id, lambda: current_generation_id,
+                                                             chunk_counter, audio_queue, audio_queue_lock, chunks_notifier)
+                                    )
+                                    active_tasks.add(tts_task)
+                                    tts_task.add_done_callback(lambda t: active_tasks.discard(t))
+                                    chunk_counter += 1
+                            
+                            # Signal end of audio chunks
+                            async with audio_queue_lock:
+                                total_chunks[0] = chunk_counter
+                                print(f"[{time.time():.2f}] Total chunks to send: {chunk_counter}")
+                            
+                            # Notify audio sender that we're done generating chunks
+                            chunks_notifier.set()
+                            
+                            # Add complete response to conversation
+                            conversation.append({"role": "assistant", "content": full_response})
+                            
+                            # Send stream complete
+                            await websocket.send_json({
+                                "type": "stream_complete",
+                                "full_text": full_response
+                            })
+                        except asyncio.CancelledError:
+                            print("Stream cancelled due to interruption")
+                            # Send partial response complete
+                            await websocket.send_json({
+                                "type": "stream_complete",
+                                "full_text": full_response,
+                                "interrupted": True
+                            })
+                            raise
+                        finally:
+                            # Clean up notifier
+                            if chunks_notifier in notifiers_list:
+                                notifiers_list.remove(chunks_notifier)
+                    
+                    # Run the streaming in a task so it can be cancelled
+                    stream_task = asyncio.create_task(stream_response(generation_id, active_notifiers, sentence))
+                    active_tasks.add(stream_task)
+                    stream_task.add_done_callback(lambda t: active_tasks.discard(t))
+                    
+                    # Wait for the task to complete
+                    try:
+                        await stream_task
+                    except asyncio.CancelledError:
+                        print("Main stream task cancelled")
+                    
+    except WebSocketDisconnect:
+        print("Client disconnected normally")
+        audio_handler.stop()
+    except Exception as e:
+        print(f"WebSocket error: {type(e).__name__}: {e}")
+        import traceback
+        traceback.print_exc()
+        audio_handler.stop()
 
 @app.get("/audio/{audio_id}")
 async def get_audio(audio_id: str):
