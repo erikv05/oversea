@@ -1,5 +1,4 @@
 import { useState, useEffect, useRef } from 'react'
-import './App.css'
 import { AudioPlayer } from './AudioPlayer'
 import { AudioStreamer } from './AudioStreamer'
 
@@ -31,10 +30,11 @@ function App() {
     // Initialize audio player
     audioPlayerRef.current = new AudioPlayer()
     audioPlayerRef.current.setOnComplete(() => {
-      console.log('All audio finished playing')
+      console.log('[FRONTEND] All audio finished playing')
       setIsProcessing(false)
       isProcessingRef.current = false
       setIsAgentSpeaking(false)
+      console.log('[FRONTEND] Agent speaking complete, ready for user input')
     })
     
     // Initialize WebSocket connection
@@ -80,27 +80,30 @@ function App() {
       const data = JSON.parse(event.data)
       
       switch (data.type) {
-        case 'interim_transcript':
+        case 'interim_transcript': {
           // Show interim transcript
+          console.log('[FRONTEND] Received interim_transcript:', data.text)
           setCurrentUserText(data.text)
           setIsUserSpeaking(true)
           
           // If AI is speaking and user starts talking, interrupt
           const isAudioPlaying = audioPlayerRef.current?.isPlaying() || false
           if ((isProcessingRef.current || isAudioPlaying) && data.text.trim().length > 0) {
-            console.log('User speaking (interim), interrupting AI...')
+            console.log('[FRONTEND] User speaking (interim), interrupting AI...')
             interruptAI()
           }
           break
+        }
           
         case 'user_transcript':
           // Final transcript from user
-          console.log('User said:', data.text)
+          console.log('[FRONTEND] Received user_transcript:', data.text)
           
           // Add to conversation
           setConversation(prev => {
             const newConv = [...prev, { role: 'user', content: data.text }]
             conversationRef.current = newConv
+            console.log('[FRONTEND] Updated conversation:', newConv)
             return newConv
           })
           
@@ -112,10 +115,12 @@ function App() {
           setIsAgentSpeaking(true)
           currentResponseRef.current = ''
           setStreamingText('')
+          console.log('[FRONTEND] Set processing states')
           
           // Reset audio player for new response
           if (audioPlayerRef.current) {
             audioPlayerRef.current.reset()
+            console.log('[FRONTEND] Reset audio player')
           }
           break
           
@@ -123,6 +128,7 @@ function App() {
           // Update the streaming text
           currentResponseRef.current += data.text
           setStreamingText(currentResponseRef.current)
+          console.log('[FRONTEND] Received text_chunk:', data.text)
           
           // Update conversation with partial response
           setConversation(prev => {
@@ -137,18 +143,20 @@ function App() {
           })
           break
           
-        case 'audio_chunk':
+        case 'audio_chunk': {
           // Queue audio chunk for playback
           const audioUrl = `http://localhost:8000${data.audio_url}`
-          console.log('Received audio chunk:', audioUrl)
+          console.log('[FRONTEND] Received audio_chunk:', audioUrl, 'text:', data.text)
           
           if (audioPlayerRef.current) {
             audioPlayerRef.current.addToQueue(audioUrl, data.text)
+            console.log('[FRONTEND] Added audio to queue')
           }
           break
+        }
           
         case 'stream_complete':
-          console.log('Response complete:', data.full_text)
+          console.log('[FRONTEND] Received stream_complete:', data.full_text)
           // Don't add to conversation here - it's already been added during streaming
           setStreamingText('')
           setCurrentUserText('')
@@ -159,10 +167,16 @@ function App() {
           
           // Continue listening if the call is still active
           if (isListeningRef.current && audioStreamerRef.current) {
-            console.log('Continuing to listen for next user input...')
+            console.log('[FRONTEND] Checking audio streaming status...')
+            console.log('[FRONTEND] isListening:', isListeningRef.current)
+            console.log('[FRONTEND] audioStreamer exists:', !!audioStreamerRef.current)
+            console.log('[FRONTEND] isStreaming:', audioStreamerRef.current?.isStreaming)
             // Audio streaming should already be running, just ensure it's active
             if (!audioStreamerRef.current.isStreaming) {
+              console.log('[FRONTEND] Restarting audio streaming')
               audioStreamerRef.current.start()
+            } else {
+              console.log('[FRONTEND] Audio streaming is already active')
             }
           }
           break
@@ -249,39 +263,72 @@ function App() {
   }
 
   return (
-    <div className="app">
-      <div className="container">
-        <h1>Voice Agent (Google Cloud STT)</h1>
+    <div className="min-h-screen bg-gray-900 flex items-center justify-center p-4">
+      <div className="w-full max-w-2xl">
+        <h1 className="text-3xl font-bold text-white text-center mb-8">
+          Voice Agent (Google Cloud STT)
+        </h1>
         
-        <div className="conversation">
-          {conversation.map((msg, idx) => (
-            <div key={idx} className={`message ${msg.role}`}>
-              <strong>{msg.role === 'user' ? 'You' : 'Agent'}:</strong> {msg.content}
-            </div>
-          ))}
-          {currentUserText && isUserSpeaking && (
-            <div className="message user interim">
-              <strong>You:</strong> {currentUserText}
-            </div>
-          )}
-          {streamingText && (
-            <div className="message assistant streaming">
-              <strong>Agent:</strong> {streamingText}
+        <div className="bg-gray-800 rounded-lg shadow-xl p-6 mb-8 max-h-[60vh] overflow-y-auto">
+          {conversation.length === 0 && !currentUserText && !streamingText ? (
+            <p className="text-gray-400 text-center">Start a conversation by clicking the phone button below</p>
+          ) : (
+            <div className="space-y-4">
+              {conversation.map((msg, idx) => (
+                <div
+                  key={idx}
+                  className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
+                >
+                  <div
+                    className={`max-w-[80%] rounded-lg px-4 py-2 ${
+                      msg.role === 'user'
+                        ? 'bg-blue-600 text-white'
+                        : 'bg-gray-700 text-gray-100'
+                    }`}
+                  >
+                    <p className="text-sm font-medium mb-1 opacity-75">
+                      {msg.role === 'user' ? 'You' : 'Agent'}
+                    </p>
+                    <p className="text-sm">{msg.content}</p>
+                  </div>
+                </div>
+              ))}
+              {currentUserText && isUserSpeaking && (
+                <div className="flex justify-end">
+                  <div className="max-w-[80%] rounded-lg px-4 py-2 bg-blue-600/50 text-white">
+                    <p className="text-sm font-medium mb-1 opacity-75">You</p>
+                    <p className="text-sm italic">{currentUserText}</p>
+                  </div>
+                </div>
+              )}
+              {streamingText && (
+                <div className="flex justify-start">
+                  <div className="max-w-[80%] rounded-lg px-4 py-2 bg-gray-700 text-gray-100">
+                    <p className="text-sm font-medium mb-1 opacity-75">Agent</p>
+                    <p className="text-sm">{streamingText}</p>
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </div>
         
-        <button 
-          className={`mic-button ${isListening ? 'listening' : ''}`}
-          onClick={toggleListening}
-        >
-          {isListening ? '📞' : '☎️'}
-        </button>
-        
-        <p className="status">
-          {isListening ? 'On call (Google Cloud STT)' : 'Click to start call'}
-        </p>
-        
+        <div className="flex flex-col items-center">
+          <button
+            className={`w-20 h-20 rounded-full transition-all duration-300 transform hover:scale-110 ${
+              isListening
+                ? 'bg-red-600 hover:bg-red-700 shadow-lg shadow-red-600/50 animate-pulse'
+                : 'bg-green-600 hover:bg-green-700 shadow-lg shadow-green-600/50'
+            }`}
+            onClick={toggleListening}
+          >
+            <span className="text-3xl">{isListening ? '📞' : '☎️'}</span>
+          </button>
+          
+          <p className="mt-4 text-gray-400 text-sm">
+            {isListening ? 'On call (Google Cloud STT)' : 'Click to start call'}
+          </p>
+        </div>
       </div>
     </div>
   )

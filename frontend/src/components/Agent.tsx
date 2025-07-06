@@ -38,19 +38,6 @@ function Agent() {
       console.log("All audio finished playing");
       setIsProcessing(false);
       isProcessingRef.current = false;
-
-      // Resume listening
-      if (recognitionRef.current && isListeningRef.current) {
-        setTimeout(() => {
-          try {
-            recognitionRef.current.start();
-            console.log("Resumed listening after all TTS");
-            setTranscript("");
-          } catch (e) {
-            console.log("Could not restart recognition:", e);
-          }
-        }, 500);
-      }
     });
 
     // Initialize WebSocket connection
@@ -102,6 +89,16 @@ function Agent() {
       const data = JSON.parse(event.data);
 
       switch (data.type) {
+        case "user_interruption":
+          console.log("Backend detected user interruption:", data.text);
+          // Trigger interruption if AI is speaking
+          if (isProcessingRef.current || (audioPlayerRef.current && audioPlayerRef.current.isPlaying())) {
+            interruptAI();
+            // Show the interrupting text
+            setTranscript(data.text);
+          }
+          break;
+
         case "stream_start":
           console.log("Stream started");
 
@@ -177,6 +174,20 @@ function Agent() {
             pendingResponseRef.current = null;
             audioPlayerRef.current.addToQueue(audioUrl, data.text);
           }
+          break;
+
+        case "interim_transcript":
+          // Show real-time speech during agent response
+          console.log("Interim transcript received:", data.text);
+          if (isProcessingRef.current || (audioPlayerRef.current && audioPlayerRef.current.isPlaying())) {
+            setTranscript(data.text);
+          }
+          break;
+
+        case "user_transcript":
+          console.log("User transcript received:", data.text);
+          // Clear the transcript display since it's been processed
+          setTranscript("");
           break;
 
         case "stream_complete":
@@ -285,14 +296,21 @@ function Agent() {
       recognition.onresult = (event: any) => {
         const current = event.resultIndex;
         const transcript = event.results[current][0].transcript;
+        const isFinal = event.results[current].isFinal;
 
         // Update transcript display
         setTranscript(transcript);
         lastSpeechTimeRef.current = Date.now();
 
+        // Log recognition activity during audio playback
+        if (audioPlayerRef.current && audioPlayerRef.current.isPlaying()) {
+          console.log(`Speech detected during playback - Final: ${isFinal}, Text: "${transcript}"`);
+        }
+
         // If AI is speaking/processing and user starts talking, interrupt
         if (
-          (isProcessingRef.current || pendingResponseRef.current) &&
+          (isProcessingRef.current || pendingResponseRef.current || 
+           (audioPlayerRef.current && audioPlayerRef.current.isPlaying())) &&
           transcript.trim().length > 3
         ) {
           console.log("User speaking, interrupting AI...");
@@ -508,8 +526,9 @@ function Agent() {
     setIsStreaming(false);
     setStreamingText("");
 
-    // Clear speech buffer
+    // Clear speech buffer and transcript
     speechBufferRef.current = "";
+    setTranscript("");
   };
 
   const toggleListening = () => {
