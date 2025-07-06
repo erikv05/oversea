@@ -87,6 +87,8 @@ class AudioStreamHandler:
         self.last_speech_time = time.time()
         self.pending_transcript = ""
         self.silence_threshold = 1.0  # 1 second of silence triggers response
+        self.is_listening_for_user = True  # Track if we should process user speech
+        self.force_restart_stt = False  # Signal to force restart STT stream
         
     async def start(self):
         """Start the audio processing thread"""
@@ -110,6 +112,34 @@ class AudioStreamHandler:
         """Add audio data to the processing queue"""
         if self.is_running:
             self.audio_queue.put(audio_data)
+            # Log periodically to track audio flow
+            if len(audio_data) > 0 and time.time() % 10 < 0.1:
+                print(f"[Audio] Adding audio - listening: {self.is_listening_for_user}, queue size: {self.audio_queue.qsize()}")
+            
+    def pause_listening(self):
+        """Pause processing user speech (during agent response)"""
+        print("Pausing user speech processing")
+        self.is_listening_for_user = False
+        # Clear the audio queue to prevent stale audio
+        cleared = 0
+        while not self.audio_queue.empty():
+            try:
+                self.audio_queue.get_nowait()
+                cleared += 1
+            except queue.Empty:
+                break
+        if cleared > 0:
+            print(f"Cleared {cleared} audio chunks from queue")
+        
+    def resume_listening(self):
+        """Resume processing user speech (after agent response)"""
+        print("[RESUME] Starting resume_listening()")
+        self.is_listening_for_user = True
+        self.pending_transcript = ""  # Clear any pending transcript
+        self.last_speech_time = time.time()  # Reset silence timer
+        self.force_restart_stt = True  # Force restart STT to ensure fresh stream
+        print(f"[RESUME] Set is_listening_for_user=True, force_restart_stt=True")
+        print(f"[RESUME] Current state - is_running: {self.is_running}, speech_thread alive: {self.speech_thread.is_alive() if self.speech_thread else 'None'}")
             
     async def get_transcript(self) -> Optional[str]:
         """Get the next complete sentence transcript"""
@@ -140,58 +170,106 @@ class AudioStreamHandler:
             single_utterance=False,  # Continue listening
         )
         
-        # Audio generator that yields chunks from the queue
-        def audio_generator():
-            while self.is_running:
-                chunk = self.audio_queue.get()
-                if chunk is None:
-                    break
-                yield speech.StreamingRecognizeRequest(audio_content=chunk)
-        
-        try:
-            # Start streaming recognition
-            responses = speech_client.streaming_recognize(
-                streaming_config, 
-                audio_generator()
-            )
-            
-            # Process responses
-            for response in responses:
-                if not self.is_running:
-                    break
+        # Continuously restart recognition to handle streaming limits
+        while self.is_running:
+            try:
+                print(f"[STT] Starting new Google STT stream (is_listening: {self.is_listening_for_user})...")
+                
+                # Audio generator that yields chunks from the queue
+                def audio_generator():
+                    # Google STT has a ~5 minute limit, so we'll restart periodically
+                    start_time = time.time()
+                    chunks_sent = 0
+                    print("[STT] Audio generator started")
                     
-                for result in response.results:
-                    transcript = result.alternatives[0].transcript
+                    # Reset force restart flag at the beginning of new stream
+                    if self.force_restart_stt:
+                        print("[STT] Resetting force_restart_stt flag")
+                        self.force_restart_stt = False
                     
-                    if result.is_final:
-                        # Final result - add to pending transcript
-                        self.pending_transcript += " " + transcript
-                        self.last_speech_time = time.time()
-                        
-                        # Send the accumulated transcript for display
-                        asyncio.run_coroutine_threadsafe(
-                            self.websocket.send_json({
-                                "type": "interim_transcript",
-                                "text": self.pending_transcript.strip()
-                            }),
-                            self.loop
-                        )
-                    else:
-                        # Interim result - update display with full pending + interim
-                        if transcript.strip():
-                            self.last_speech_time = time.time()
-                            # Show accumulated text plus current interim
-                            display_text = (self.pending_transcript + " " + transcript).strip()
-                            asyncio.run_coroutine_threadsafe(
-                                self.websocket.send_json({
-                                    "type": "interim_transcript",
-                                    "text": display_text
-                                }),
-                                self.loop
-                            )
+                    while self.is_running and (time.time() - start_time) < 240:  # 4 minutes
+                        # Check if we need to force restart
+                        if self.force_restart_stt:
+                            print("[STT] Force restart requested during stream, breaking audio generator")
+                            break
                             
-        except Exception as e:
-            print(f"Error in speech recognition: {e}")
+                        try:
+                            # Get audio with timeout to allow periodic checks
+                            chunk = self.audio_queue.get(timeout=0.1)
+                            if chunk is None:
+                                print("[STT] Received None chunk, breaking")
+                                break
+                            chunks_sent += 1
+                            if chunks_sent % 50 == 0:  # Log every 50 chunks
+                                print(f"[STT] Sent {chunks_sent} audio chunks to Google STT")
+                            yield speech.StreamingRecognizeRequest(audio_content=chunk)
+                        except queue.Empty:
+                            continue
+                    print(f"[STT] Audio generator ended after {chunks_sent} chunks")
+                
+                # Start streaming recognition
+                responses = speech_client.streaming_recognize(
+                    streaming_config, 
+                    audio_generator()
+                )
+                
+                # Process responses
+                for response in responses:
+                    if not self.is_running:
+                        break
+                    
+                    # Check if we need to restart the stream
+                    if self.force_restart_stt:
+                        print("[STT] Force restart detected in response loop, breaking")
+                        break
+                        
+                    for result in response.results:
+                        transcript = result.alternatives[0].transcript
+                        
+                        # Only process transcripts if we're listening for user input
+                        if self.is_listening_for_user:
+                            if result.is_final:
+                                # Final result - add to pending transcript
+                                self.pending_transcript += " " + transcript
+                                self.last_speech_time = time.time()
+                                print(f"[STT] Final transcript: {transcript}")
+                                print(f"[STT] Accumulated transcript: {self.pending_transcript.strip()}")
+                                
+                                # Send the accumulated transcript for display
+                                asyncio.run_coroutine_threadsafe(
+                                    self.websocket.send_json({
+                                        "type": "interim_transcript",
+                                        "text": self.pending_transcript.strip()
+                                    }),
+                                    self.loop
+                                )
+                                print(f"[STT] Sent final transcript to frontend")
+                            else:
+                                # Interim result - update display with full pending + interim
+                                if transcript.strip():
+                                    self.last_speech_time = time.time()
+                                    print(f"[STT] Interim transcript: {transcript}")
+                                    # Show accumulated text plus current interim
+                                    display_text = (self.pending_transcript + " " + transcript).strip()
+                                    asyncio.run_coroutine_threadsafe(
+                                        self.websocket.send_json({
+                                            "type": "interim_transcript",
+                                            "text": display_text
+                                        }),
+                                        self.loop
+                                    )
+                                    print(f"[STT] Sent interim transcript to frontend: {display_text}")
+                        else:
+                            if transcript.strip():
+                                print(f"[STT] Ignoring transcript (not listening): {transcript}")
+                                
+                print(f"[STT] Stream ended - is_running: {self.is_running}, is_listening: {self.is_listening_for_user}")
+                                
+            except Exception as e:
+                print(f"[STT] Error in speech recognition: {e}")
+                if self.is_running:
+                    print("[STT] Restarting stream after error...")
+                    time.sleep(0.5)  # Brief pause before retry
             
     def _extract_complete_sentences(self, text: str) -> list[str]:
         """Extract complete sentences from text buffer"""
@@ -222,26 +300,27 @@ class AudioStreamHandler:
         """Monitor for silence and trigger response when user stops speaking"""
         while self.is_running:
             try:
-                # Check if we have pending transcript and enough silence
-                if self.pending_transcript.strip():
+                # Only process if we're listening for user input
+                if self.is_listening_for_user and self.pending_transcript.strip():
                     silence_duration = time.time() - self.last_speech_time
                     if silence_duration >= self.silence_threshold:
                         # User has stopped speaking, process the full transcript
                         full_transcript = self.pending_transcript.strip()
-                        print(f"Silence detected after {silence_duration:.1f}s, processing: {full_transcript}")
+                        print(f"[SILENCE] Detected after {silence_duration:.1f}s, processing: {full_transcript}")
                         
                         # Put the complete transcript in the queue
                         asyncio.run_coroutine_threadsafe(
                             self.transcript_queue.put(full_transcript),
                             self.loop
                         )
+                        print(f"[SILENCE] Queued transcript for processing")
                         
                         # Clear pending transcript
                         self.pending_transcript = ""
                         
                 time.sleep(0.1)  # Check every 100ms
             except Exception as e:
-                print(f"Error in silence monitor: {e}")
+                print(f"[SILENCE] Error in monitor: {e}")
 
 async def generate_and_queue_tts(websocket: WebSocket, text: str, gen_id: int, current_gen_id_ref, 
                                 chunk_index: int, audio_queue: dict, audio_queue_lock: asyncio.Lock,
@@ -646,21 +725,27 @@ async def websocket_endpoint(websocket: WebSocket):
                 # Check for complete sentences
                 sentence = await audio_handler.get_transcript()
                 if sentence:
-                    print(f"Complete sentence: {sentence}")
+                    print(f"[MAIN] Complete sentence received: {sentence}")
+                    
+                    # Pause listening while we process the response
+                    audio_handler.pause_listening()
                     
                     # Add to conversation
                     conversation.append({"role": "user", "content": sentence})
+                    print(f"[MAIN] Added to conversation, total messages: {len(conversation)}")
                     
                     # Send sentence to client for display
                     await websocket.send_json({
                         "type": "user_transcript",
                         "text": sentence
                     })
+                    print(f"[MAIN] Sent user_transcript to frontend")
                     
                     # Start streaming response
                     await websocket.send_json({
                         "type": "stream_start"
                     })
+                    print(f"[MAIN] Sent stream_start to frontend")
                     
                     # Increment generation ID for this response
                     current_generation_id += 1
@@ -668,9 +753,10 @@ async def websocket_endpoint(websocket: WebSocket):
                     
                     # Create a task for the streaming response
                     async def stream_response(gen_id: int, notifiers_list: list, user_message: str):
+                        print(f"[STREAM] stream_response started for gen_id {gen_id}, message: {user_message}")
                         # Check if this generation is still current
                         if gen_id != current_generation_id:
-                            print(f"Generation {gen_id} cancelled before starting")
+                            print(f"[STREAM] Generation {gen_id} cancelled before starting")
                             return
                             
                         # Buffer for accumulating text chunks
@@ -812,10 +898,17 @@ async def websocket_endpoint(websocket: WebSocket):
                             conversation.append({"role": "assistant", "content": full_response})
                             
                             # Send stream complete
+                            print("[MAIN] Sending stream_complete")
                             await websocket.send_json({
                                 "type": "stream_complete",
                                 "full_text": full_response
                             })
+                            print("[MAIN] stream_complete sent successfully")
+                            
+                            # Resume listening for user input
+                            print("[MAIN] About to call audio_handler.resume_listening()")
+                            audio_handler.resume_listening()
+                            print("[MAIN] audio_handler.resume_listening() called successfully")
                         except asyncio.CancelledError:
                             print("Stream cancelled due to interruption")
                             # Send partial response complete
@@ -824,6 +917,8 @@ async def websocket_endpoint(websocket: WebSocket):
                                 "full_text": full_response,
                                 "interrupted": True
                             })
+                            # Resume listening after interruption
+                            audio_handler.resume_listening()
                             raise
                         finally:
                             # Clean up notifier
@@ -831,15 +926,22 @@ async def websocket_endpoint(websocket: WebSocket):
                                 notifiers_list.remove(chunks_notifier)
                     
                     # Run the streaming in a task so it can be cancelled
+                    print("[MAIN] Creating stream_response task")
                     stream_task = asyncio.create_task(stream_response(generation_id, active_notifiers, sentence))
                     active_tasks.add(stream_task)
                     stream_task.add_done_callback(lambda t: active_tasks.discard(t))
                     
                     # Wait for the task to complete
                     try:
+                        print("[MAIN] Waiting for stream_task to complete")
                         await stream_task
+                        print("[MAIN] stream_task completed successfully")
                     except asyncio.CancelledError:
-                        print("Main stream task cancelled")
+                        print("[MAIN] stream_task was cancelled")
+                    except Exception as e:
+                        print(f"[MAIN] stream_task failed with error: {e}")
+                        import traceback
+                        traceback.print_exc()
                     
     except WebSocketDisconnect:
         print("Client disconnected normally")
@@ -903,4 +1005,4 @@ async def shutdown_event():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True, log_level="info")
