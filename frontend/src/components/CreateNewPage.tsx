@@ -8,6 +8,9 @@ const CreateNewPage: React.FC = () => {
   const [selectedModel, setSelectedModel] = useState('Play 2.0 (Most Stable)');
   const [selectedPrivacy, setSelectedPrivacy] = useState('Public');
   const [currentStep, setCurrentStep] = useState('identity');
+  const [agentGreeting, setAgentGreeting] = useState('');
+  const [agentPrompt, setAgentPrompt] = useState('');
+  const [selectedBehavior, setSelectedBehavior] = useState('');
 
   const voices = ['Vincent', 'Alice', 'Bob', 'Emma'];
   const speeds = ['0.5x', '0.75x', '1.0x', '1.25x', '1.5x', '2.0x'];
@@ -79,7 +82,8 @@ const CreateNewPage: React.FC = () => {
         <div className="flex-1 overflow-y-auto p-6 pr-3 relative">
           <div className="max-w-lg ml-auto mr-6 relative">
             {/* Form Container */}
-            <div className="bg-neutral-900/80 rounded-2xl p-8 space-y-6 border border-neutral-700/50">
+            {currentStep === 'identity' ? (
+            <div className="bg-neutral-900/80 rounded-2xl p-6 space-y-5 border border-neutral-800/30">
           
           {/* Name Section */}
           <div className="space-y-3">
@@ -95,7 +99,7 @@ const CreateNewPage: React.FC = () => {
               type="text"
               value={agentName}
               onChange={(e) => setAgentName(e.target.value)}
-              className="w-full bg-black/50 border border-neutral-700 rounded-2xl px-5 py-2.5 text-white placeholder-neutral-400 focus:outline-none focus:border-white/30 transition-colors"
+              className="w-full bg-black/50 border border-neutral-800/50 rounded-2xl px-5 py-2.5 text-white placeholder-neutral-400 focus:outline-none focus:border-white/20 transition-colors"
               placeholder="Enter agent name"
             />
           </div>
@@ -122,7 +126,7 @@ const CreateNewPage: React.FC = () => {
                 <select
                   value={selectedVoice}
                   onChange={(e) => setSelectedVoice(e.target.value)}
-                  className="w-full bg-black/50 border border-neutral-700 rounded-2xl px-5 py-2.5 text-white appearance-none focus:outline-none focus:border-white/30 cursor-pointer transition-colors"
+                  className="w-full bg-black/50 border border-neutral-800/50 rounded-2xl px-5 py-2.5 text-white appearance-none focus:outline-none focus:border-white/20 cursor-pointer transition-colors"
                 >
                   {voices.map(voice => (
                     <option key={voice} value={voice}>{voice}</option>
@@ -135,7 +139,7 @@ const CreateNewPage: React.FC = () => {
                 <select
                   value={selectedSpeed}
                   onChange={(e) => setSelectedSpeed(e.target.value)}
-                  className="w-full bg-black/50 border border-neutral-700 rounded-2xl px-5 py-2.5 text-white appearance-none focus:outline-none focus:border-white/30 cursor-pointer transition-colors"
+                  className="w-full bg-black/50 border border-neutral-800/50 rounded-2xl px-5 py-2.5 text-white appearance-none focus:outline-none focus:border-white/20 cursor-pointer transition-colors"
                 >
                   {speeds.map(speed => (
                     <option key={speed} value={speed}>{speed}</option>
@@ -155,7 +159,7 @@ const CreateNewPage: React.FC = () => {
               <select
                 value={selectedModel}
                 onChange={(e) => setSelectedModel(e.target.value)}
-                className="w-full bg-black/50 border border-neutral-700 rounded-2xl px-5 py-2.5 text-white appearance-none focus:outline-none focus:border-white/30 cursor-pointer transition-colors"
+                className="w-full bg-black/50 border border-neutral-800/50 rounded-2xl px-5 py-2.5 text-white appearance-none focus:outline-none focus:border-white/20 cursor-pointer transition-colors"
               >
                 {models.map(model => (
                   <option key={model} value={model}>{model}</option>
@@ -174,7 +178,7 @@ const CreateNewPage: React.FC = () => {
               <span className="text-sm font-medium text-neutral-400">AVATAR</span>
             </div>
             
-            <div className="border-2 border-dashed border-neutral-700 rounded-2xl p-3 text-center hover:border-white/30 transition-colors cursor-pointer bg-black/30 flex items-center justify-center space-x-3">
+            <div className="border-2 border-dashed border-neutral-800/50 rounded-2xl p-3 text-center hover:border-white/20 transition-colors cursor-pointer bg-black/30 flex items-center justify-center space-x-3">
               <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
               </svg>
@@ -195,7 +199,7 @@ const CreateNewPage: React.FC = () => {
               <select
                 value={selectedPrivacy}
                 onChange={(e) => setSelectedPrivacy(e.target.value)}
-                className="w-full bg-black/50 border border-neutral-700 rounded-2xl px-5 py-2.5 text-white appearance-none focus:outline-none focus:border-white/30 cursor-pointer transition-colors"
+                className="w-full bg-black/50 border border-neutral-800/50 rounded-2xl px-5 py-2.5 text-white appearance-none focus:outline-none focus:border-white/20 cursor-pointer transition-colors"
               >
                 {privacyOptions.map(option => (
                   <option key={option} value={option}>{option}</option>
@@ -209,6 +213,93 @@ const CreateNewPage: React.FC = () => {
           </div>
 
             </div>
+            ) : currentStep === 'behavior' ? (
+              <div className="bg-neutral-900/80 rounded-2xl p-6 space-y-6 border border-neutral-800/30">
+                {/* Agent Greeting Section */}
+                <div className="space-y-3">
+                  <div className="flex items-center space-x-2">
+                    <svg className="w-5 h-5 text-neutral-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+                    </svg>
+                    <span className="text-sm font-medium text-neutral-400">AGENT GREETING</span>
+                  </div>
+                  <p className="text-sm text-neutral-500">Your agent will say this message to start every conversation.</p>
+                  <textarea
+                    value={agentGreeting}
+                    onChange={(e) => setAgentGreeting(e.target.value)}
+                    placeholder="e.g. Hey! How may we be of assistance today?"
+                    className="w-full h-32 bg-black/50 border border-neutral-800/50 rounded-2xl px-5 py-4 text-white placeholder-neutral-600 focus:outline-none focus:border-white/20 transition-colors resize-none"
+                  />
+                  <div className="text-xs text-neutral-500">{agentGreeting.length}/250</div>
+                </div>
+
+                {/* Agent Prompt Section */}
+                <div className="space-y-3">
+                  <div className="flex items-center space-x-2">
+                    <svg className="w-5 h-5 text-neutral-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                    </svg>
+                    <span className="text-sm font-medium text-neutral-400">AGENT PROMPT</span>
+                  </div>
+                  <p className="text-sm text-neutral-500">Give instructions to your AI about how it should behave and interact with others in conversation.</p>
+                  <textarea
+                    value={agentPrompt}
+                    onChange={(e) => setAgentPrompt(e.target.value)}
+                    placeholder="e.g. You are a customer support agent. You will try to respond to the user's questions with the best answers given your knowledge. You will never make up information."
+                    className="w-full h-40 bg-black/50 border border-neutral-800/50 rounded-2xl px-5 py-4 text-white placeholder-neutral-600 focus:outline-none focus:border-white/20 transition-colors resize-none"
+                  />
+                  <div className="text-xs text-neutral-500">{agentPrompt.length}/10000</div>
+                </div>
+
+                {/* Agent Behavior Section */}
+                <div className="space-y-3">
+                  <div className="flex items-center space-x-2">
+                    <svg className="w-5 h-5 text-neutral-400" fill="currentColor" viewBox="0 0 24 24">
+                      <path d="M15.41 7.41L14 6l-6 6 6 6 1.41-1.41L10.83 12z"/>
+                    </svg>
+                    <span className="text-sm font-medium text-neutral-400">AGENT BEHAVIOR</span>
+                  </div>
+                  
+                  <div className="space-y-3">
+                    <div 
+                      className={`border rounded-2xl p-4 cursor-pointer transition-all ${
+                        selectedBehavior === 'professional' 
+                          ? 'border-white bg-white/10' 
+                          : 'border-neutral-800/50 hover:border-neutral-700'
+                      }`}
+                      onClick={() => setSelectedBehavior('professional')}
+                    >
+                      <h3 className="text-white font-medium mb-1">Professional Use Case</h3>
+                      <p className="text-sm text-neutral-400">Configured to be more polite, formal, staying on task, and assisting.</p>
+                    </div>
+                    
+                    <div 
+                      className={`border rounded-2xl p-4 cursor-pointer transition-all ${
+                        selectedBehavior === 'character' 
+                          ? 'border-white bg-white/10' 
+                          : 'border-neutral-800/50 hover:border-neutral-700'
+                      }`}
+                      onClick={() => setSelectedBehavior('character')}
+                    >
+                      <h3 className="text-white font-medium mb-1">Character Use Case</h3>
+                      <p className="text-sm text-neutral-400">Configured to assume and impersonate identity.</p>
+                    </div>
+                    
+                    <div 
+                      className={`border rounded-2xl p-4 cursor-pointer transition-all ${
+                        selectedBehavior === 'chatty' 
+                          ? 'border-white bg-white/10' 
+                          : 'border-neutral-800/50 hover:border-neutral-700'
+                      }`}
+                      onClick={() => setSelectedBehavior('chatty')}
+                    >
+                      <h3 className="text-white font-medium mb-1">Super Chatty</h3>
+                      <p className="text-sm text-neutral-400">For casual laid-back conversations, like you are talking to a friend.</p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ) : null}
 
             {/* Navigation Buttons - positioned relative to form */}
             <div className="flex items-center justify-center space-x-4 mt-8">
@@ -237,7 +328,7 @@ const CreateNewPage: React.FC = () => {
       <div className="w-96 bg-black flex flex-col p-6">
         <div className="flex-1 flex flex-col items-center justify-center">
           {/* Preview Container */}
-          <div className="bg-neutral-900/80 rounded-2xl p-12 flex flex-col items-center w-full h-[500px] border border-neutral-700/50">
+          <div className="bg-neutral-900/80 rounded-2xl p-12 flex flex-col items-center w-full h-[500px] border border-neutral-800/30">
             <div className="mb-8">
               <h2 className="text-sm font-medium text-neutral-400 text-center">AGENT PREVIEW</h2>
             </div>

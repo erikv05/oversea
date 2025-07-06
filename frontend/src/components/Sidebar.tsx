@@ -29,10 +29,10 @@ const Sidebar: React.FC<SidebarProps> = ({ onNavigate }) => {
 
       {/* Main menu */}
       <div className="flex-1 overflow-y-auto py-2">
-        <div className="px-2">
+        <div className="px-1">
           {/* Agents */}
           <div
-            className="flex items-center px-3 py-1.5 rounded-md hover:bg-neutral-800 cursor-pointer transition-colors"
+            className="flex items-center px-2 py-1.5 rounded-md hover:bg-neutral-800 cursor-pointer transition-colors"
             onClick={() => toggleExpanded("agents")}
           >
             <svg
@@ -60,7 +60,7 @@ const Sidebar: React.FC<SidebarProps> = ({ onNavigate }) => {
           {expandedItems.agents && (
             <div className="ml-8 mt-0.5">
               <div
-                className="flex items-center px-3 py-1.5 rounded-md hover:bg-neutral-800 cursor-pointer transition-colors"
+                className="flex items-center px-2 py-1.5 rounded-md hover:bg-neutral-800 cursor-pointer transition-colors"
                 onClick={() => onNavigate("create-new")}
               >
                 <PlusIcon className="w-4 h-4 mr-2" />
@@ -134,7 +134,7 @@ const Sidebar: React.FC<SidebarProps> = ({ onNavigate }) => {
           )}
 
           {/* Playground */}
-          <div className="flex items-center px-3 py-1.5 rounded-md hover:bg-neutral-800 cursor-pointer transition-colors">
+          <div className="flex items-center px-2 py-1.5 rounded-md hover:bg-neutral-800 cursor-pointer transition-colors">
             <svg
               className="w-5 h-5 mr-2"
               fill="none"
