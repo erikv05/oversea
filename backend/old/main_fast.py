@@ -40,10 +40,10 @@ app.add_middleware(
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
-    print(f"✓ Gemini API Key configured")
+    print(f"Gemini API Key configured")
     model = genai.GenerativeModel('gemini-2.0-flash-exp')
 else:
-    print("✗ Warning: GEMINI_API_KEY not found in environment variables")
+    print("Warning: GEMINI_API_KEY not found in environment variables")
     model = None
 
 # Configure OpenAI Whisper
@@ -51,18 +51,14 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 WHISPER_MODEL = os.getenv("WHISPER_MODEL", "whisper-1")  # Default to stable model
 if OPENAI_API_KEY:
     openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
-    print(f"✓ OpenAI client initialized (model: {WHISPER_MODEL})")
+    print(f"OpenAI client initialized for Whisper transcription using model: {WHISPER_MODEL}")
 else:
-    print("✗ Warning: OPENAI_API_KEY not found")
+    print("Warning: OPENAI_API_KEY not found in environment variables")
     openai_client = None
 
 # Configure ElevenLabs API
 ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY")
 ELEVENLABS_VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM")  # Default Rachel voice
-if ELEVENLABS_API_KEY:
-    print(f"✓ ElevenLabs configured (voice: {ELEVENLABS_VOICE_ID})")
-else:
-    print("✗ Warning: ELEVENLABS_API_KEY not found")
 
 # Create temp directory for audio files
 AUDIO_DIR = Path("temp_audio")
@@ -71,10 +67,6 @@ AUDIO_DIR.mkdir(exist_ok=True)
 # Initialize MCP client
 MCP_URL = "https://mcp.zapier.com/api/mcp/s/YjFmMGM0NjItMmYwOC00Y2M3LWEyY2EtN2JjNmY3ODU5Njg3OmMyNzViMDI4LWNmYTctNDIxZi04ZDAxLTU2ODQ3ODczNTgzMQ=="
 mcp_client = None
-
-def timestamp():
-    """Return a formatted timestamp for logging"""
-    return f"[{time.time():.3f}]"
 
 @app.get("/")
 def read_root():
@@ -99,25 +91,20 @@ class AudioStreamHandler:
         self.pre_speech_buffer_size = 3200  # 200ms of audio
         self.pre_speech_buffer = bytearray()
         
-        # Aggressive thresholds for 1.5 second total delay
-        self.energy_threshold = 400  # Higher threshold to avoid noise triggers
-        self.speech_start_frames = 5  # 50ms to start (more robust)
-        self.speech_end_frames = 20   # 200ms of silence for aggressive speculation
+        # Aggressive thresholds for fast response
+        self.energy_threshold = 200  # Lower threshold for better sensitivity
+        self.speech_start_frames = 2  # 20ms to start
+        self.speech_end_frames = 40   # 400ms of silence (reduced from 1s)
         self.frame_size = 160  # 10ms frames at 8kHz
-        
-        # Minimum speech duration
-        self.min_speech_duration = 3200  # 400ms minimum speech (allow shorter utterances)
         
         # Speculative processing
         self.speculative_task = None
-        self.is_speculating = False
+        self.last_speculative_time = 0
+        self.min_speech_duration = 4800  # 600ms minimum speech
         
         # Transcript handling
         self.transcript_queue = asyncio.Queue()
         self.processing_task = None
-        
-        # Performance tracking
-        self.speech_start_time = None
         
     async def start(self):
         """Start the audio processing task"""
@@ -136,7 +123,7 @@ class AudioStreamHandler:
         if not self.is_running:
             return
             
-        # Process audio in frames for VAD (10ms frames)
+        # Process audio in frames for VAD
         for i in range(0, len(audio_data), self.frame_size):
             frame = audio_data[i:i + self.frame_size]
             if len(frame) < self.frame_size:
@@ -157,21 +144,13 @@ class AudioStreamHandler:
                 if not self.is_speaking and self.speech_counter >= self.speech_start_frames:
                     # Start of speech detected
                     self.is_speaking = True
-                    self.speech_start_time = time.time()
-                    print(f"{timestamp()} 🎤 Speech started (energy: {frame_energy:.0f}, threshold: {self.energy_threshold})")
-                    
-                    # Cancel any speculative processing if user resumes speaking
-                    if self.speculative_task and not self.speculative_task.done():
-                        print(f"{timestamp()} ❌ Cancelling speculative processing - user resumed speaking")
-                        self.speculative_task.cancel()
-                        self.is_speculating = False
+                    print(f"[VAD] Speech started (energy: {frame_energy:.1f})")
                     
                     # Add pre-speech buffer to capture beginning of speech
                     self.speech_buffer.extend(self.pre_speech_buffer)
                     
                     await self.websocket.send_json({
-                        "type": "speech_start",
-                        "timestamp": time.time()
+                        "type": "speech_start"
                     })
                 
                 if self.is_speaking:
@@ -187,33 +166,38 @@ class AudioStreamHandler:
                     self.speech_buffer.extend(frame)
                     
                     # Start speculative processing after 200ms of silence
-                    if self.silence_counter >= self.speech_end_frames:
-                        # Cancel previous speculative task if still running
+                    if self.silence_counter == 20 and len(self.speech_buffer) > self.min_speech_duration:
+                        # Cancel any existing speculative task
                         if self.speculative_task and not self.speculative_task.done():
                             self.speculative_task.cancel()
                         
-                        # If we have enough speech, start speculative processing
-                        if len(self.speech_buffer) > self.min_speech_duration and not self.is_speculating:
-                            self.is_speculating = True
-                            speech_duration = time.time() - self.speech_start_time
-                            buffer_size_ms = len(self.speech_buffer) / 16
-                            print(f"{timestamp()} 🔮 Starting speculative processing (200ms silence, {buffer_size_ms:.0f}ms audio)")
-                            
-                            # Create speculative task
-                            self.speculative_task = asyncio.create_task(
-                                self._speculative_process(bytes(self.speech_buffer), speech_duration)
-                            )
-                        
-                        # Consider speech ended after 200ms
+                        # Start speculative transcription
+                        print(f"[VAD] Starting speculative processing after 200ms silence")
+                        self.speculative_task = asyncio.create_task(
+                            self._speculative_process(bytes(self.speech_buffer))
+                        )
+                    
+                    # Final end of speech after 400ms
+                    if self.silence_counter >= self.speech_end_frames:
+                        # End of speech detected
                         self.is_speaking = False
-                        await self.websocket.send_json({
-                            "type": "speech_end",
-                            "timestamp": time.time()
-                        })
+                        print(f"[VAD] Speech ended after {self.silence_counter * 10}ms of silence")
+                        
+                        # If we have a speculative task running, it's now the real deal
+                        if self.speculative_task and not self.speculative_task.done():
+                            print("[VAD] Converting speculative task to final")
+                            # The speculative task will handle everything
+                        else:
+                            # Process normally if no speculative task
+                            if len(self.speech_buffer) > self.min_speech_duration:
+                                await self._process_speech_segment(bytes(self.speech_buffer))
                         
                         # Clear the buffer
                         self.speech_buffer.clear()
-                        self.is_speculating = False
+                        
+                        await self.websocket.send_json({
+                            "type": "speech_end"
+                        })
     
     def _add_to_pre_speech_buffer(self, frame: bytes):
         """Add frame to circular pre-speech buffer"""
@@ -236,51 +220,62 @@ class AudioStreamHandler:
         
         return energy / num_samples if num_samples > 0 else 0
     
+    async def _speculative_process(self, audio_data: bytes):
+        """Speculatively process audio before we're 100% sure speech has ended"""
+        try:
+            # Start Whisper transcription immediately
+            transcript_task = asyncio.create_task(self._transcribe_audio(audio_data))
+            
+            # Wait a bit to see if more speech comes
+            await asyncio.sleep(0.2)  # 200ms more
+            
+            # If we're still speaking, this was premature - cancel
+            if self.is_speaking:
+                print("[SPECULATIVE] Cancelled - user still speaking")
+                transcript_task.cancel()
+                return
+            
+            # Otherwise, get the transcript and process
+            transcript_text = await transcript_task
+            
+            if transcript_text:
+                print(f"[SPECULATIVE] Success! Transcript: '{transcript_text}'")
+                # Send transcript to frontend
+                await self.websocket.send_json({
+                    "type": "user_transcript",
+                    "text": transcript_text
+                })
+                
+                # Add to queue for processing
+                await self.transcript_queue.put(transcript_text)
+                
+        except asyncio.CancelledError:
+            print("[SPECULATIVE] Task cancelled")
+        except Exception as e:
+            print(f"[SPECULATIVE] Error: {e}")
+    
     async def _transcribe_audio(self, audio_data: bytes) -> Optional[str]:
         """Transcribe audio with Whisper"""
         try:
-            transcribe_start = time.time()
-            print(f"{timestamp()} 🎯 Starting Whisper transcription")
-            
-            # Check audio energy level first
-            total_energy = 0
-            sample_count = 0
-            for i in range(0, len(audio_data) - 1, 2):
-                value = int.from_bytes(audio_data[i:i+2], byteorder='little', signed=True)
-                total_energy += abs(value)
-                sample_count += 1
-            
-            avg_energy = total_energy / sample_count if sample_count > 0 else 0
-            
-            # Skip if audio is too quiet (likely silence)
-            if avg_energy < 100:
-                print(f"{timestamp()} ⚠️  Whisper: Skipping - audio too quiet (energy: {avg_energy:.1f})")
-                return None
-            
             # Convert to WAV
-            print(f"{timestamp()} 🎯 Converting to WAV format")
-            wav_convert_start = time.time()
             wav_data = self._convert_to_wav(audio_data)
-            wav_convert_time = time.time() - wav_convert_start
             
             # Create file-like object
             audio_file = io.BytesIO(wav_data)
             audio_file.name = "audio.wav"
             
-            audio_duration = len(audio_data)/16000
-            print(f"{timestamp()} 🎯 Sending {audio_duration:.1f}s audio to OpenAI API")
-            api_start = time.time()
+            print(f"[Whisper] Transcribing {len(audio_data)/16000:.1f}s of audio")
+            start_time = time.time()
             
             # Transcribe with Whisper
             transcript = await openai_client.audio.transcriptions.create(
                 model=WHISPER_MODEL,
                 file=audio_file,
-                # Use empty prompt to reduce hallucinations
-                prompt=""
+                prompt="Accurate transcription of spoken words."
             )
             
-            api_time = time.time() - api_start
-            print(f"{timestamp()} 🎯 OpenAI API responded ({api_time:.3f}s)")
+            transcription_time = time.time() - start_time
+            print(f"[Whisper] Transcription took {transcription_time:.2f}s")
             
             transcript_text = transcript.text if hasattr(transcript, 'text') else str(transcript)
             
@@ -289,41 +284,29 @@ class AudioStreamHandler:
                 "www.", ".com", ".gov", ".org",
                 "transcription by", "translation by", 
                 "for more information visit",
-                "thank you for watching",
-                "accurate transcription of spoken words",
-                "transcribe spoken words",
-                "real-time conversation transcription"
+                "thank you for watching"
             ]
             
-            # Also check if it's just the prompt being repeated
-            is_hallucination = (
-                any(pattern.lower() in transcript_text.lower() for pattern in hallucination_patterns) or
-                transcript_text.lower().strip() == "accurate transcription of spoken words." or
-                len(transcript_text.strip()) < 3  # Too short to be real speech
-            )
+            is_hallucination = any(pattern.lower() in transcript_text.lower() for pattern in hallucination_patterns)
             
             if is_hallucination:
-                print(f"{timestamp()} ⚠️  Whisper: Rejected hallucination: '{transcript_text}'")
+                print(f"[Whisper] Rejected hallucination: '{transcript_text}'")
                 return None
-            
-            total_time = time.time() - transcribe_start
-            print(f"{timestamp()} 🎯 Transcription complete: '{transcript_text[:50]}...' (total: {total_time:.3f}s)")
             
             return transcript_text.strip()
             
         except Exception as e:
-            print(f"{timestamp()} ❌ Whisper error: {e}")
+            print(f"[Whisper] Error: {e}")
             return None
     
     async def _process_speech_segment(self, audio_data: bytes):
         """Process a complete speech segment with Whisper"""
         if not self.is_listening_for_user:
             # User is interrupting - just notify
-            print(f"{timestamp()} 🔊 User interruption during agent response")
+            print("[VAD] User interruption detected during agent response")
             await self.websocket.send_json({
                 "type": "user_interruption",
-                "text": "[User speaking]",
-                "timestamp": time.time()
+                "text": "[User speaking]"
             })
             return
         
@@ -333,46 +316,11 @@ class AudioStreamHandler:
             # Send transcript to frontend
             await self.websocket.send_json({
                 "type": "user_transcript",
-                "text": transcript_text,
-                "timestamp": time.time()
+                "text": transcript_text
             })
             
             # Add to queue for processing
             await self.transcript_queue.put(transcript_text)
-    
-    async def _speculative_process(self, audio_data: bytes, speech_duration: float):
-        """Speculatively process audio after just 200ms of silence"""
-        try:
-            spec_start = time.time()
-            print(f"{timestamp()} 🔮 [1/3] Starting speculative transcription")
-            
-            # Start transcription immediately
-            transcript_text = await self._transcribe_audio(audio_data)
-            
-            if transcript_text:
-                transcribe_time = time.time() - spec_start
-                print(f"{timestamp()} 🔮 [2/3] Speculative transcript ready: '{transcript_text}' ({transcribe_time:.2f}s)")
-                
-                # Send transcript to frontend
-                await self.websocket.send_json({
-                    "type": "user_transcript",
-                    "text": transcript_text,
-                    "timestamp": time.time()
-                })
-                
-                # Add to queue for processing
-                await self.transcript_queue.put(transcript_text)
-                
-                total_time = time.time() - spec_start
-                print(f"{timestamp()} 🔮 [3/3] Speculative complete in {total_time:.2f}s")
-            else:
-                print(f"{timestamp()} 🔮 Speculative failed - no valid transcript")
-                
-        except asyncio.CancelledError:
-            print(f"{timestamp()} 🔮 Speculative cancelled - user resumed speaking")
-            raise
-        except Exception as e:
-            print(f"{timestamp()} ❌ Speculative error: {e}")
     
     def _convert_to_wav(self, audio_data: bytes) -> bytes:
         """Convert raw PCM audio to WAV format"""
@@ -389,12 +337,12 @@ class AudioStreamHandler:
     
     def pause_listening(self):
         """Pause processing user speech (during agent response)"""
-        print(f"{timestamp()} ⏸️  Pausing user speech processing")
+        print("[VAD] Pausing user speech processing")
         self.is_listening_for_user = False
         
     def resume_listening(self):
         """Resume processing user speech (after agent response)"""
-        print(f"{timestamp()} ▶️  Resuming user speech processing")
+        print("[VAD] Resuming user speech processing")
         self.is_listening_for_user = True
         # Clear any buffered audio
         self.speech_buffer.clear()
@@ -435,32 +383,24 @@ async def generate_gemini_response_stream(user_message: str, conversation: list)
         
         prompt += f"User: {user_message}\nAssistant: "
         
-        print(f"{timestamp()} 🤖 LLM: Generating response for '{user_message}'")
-        
         # Generate streaming response
         response = model.generate_content(prompt, stream=True)
         
         first_token_time = None
         buffer = ""
-        char_count = 0
         
         for chunk in response:
             if chunk.text:
                 if first_token_time is None:
                     first_token_time = time.time() - start_time
-                    print(f"{timestamp()} ✓ LLM: First token in {first_token_time:.2f}s")
+                    print(f"[LLM] First token in {first_token_time:.2f}s")
                 
                 buffer += chunk.text
-                char_count += len(chunk.text)
-                
                 # Yield more aggressively for faster response
                 yield chunk.text
-        
-        total_time = time.time() - start_time
-        print(f"{timestamp()} ✓ LLM: Complete ({char_count} chars in {total_time:.2f}s)")
                 
     except Exception as e:
-        print(f"{timestamp()} ❌ LLM error: {str(e)}")
+        print(f"Error generating Gemini response: {str(e)}")
         yield "I'm sorry, I encountered an error while processing your request."
 
 async def generate_tts_audio_fast(text: str) -> str:
@@ -474,8 +414,6 @@ async def generate_tts_audio_fast(text: str) -> str:
         # Generate unique filename
         audio_id = str(uuid.uuid4())
         audio_path = AUDIO_DIR / f"{audio_id}.mp3"
-        
-        print(f"{timestamp()} 🔊 TTS: Generating audio for '{text[:50]}...'")
         
         # Use the fastest settings
         voice_settings = VoiceSettings(
@@ -502,20 +440,20 @@ async def generate_tts_audio_fast(text: str) -> str:
         await loop.run_in_executor(None, save, audio, str(audio_path))
         
         generation_time = time.time() - start_time
-        print(f"{timestamp()} ✓ TTS: Complete in {generation_time:.2f}s")
+        print(f"[TTS] Generated in {generation_time:.2f}s: {text[:50]}...")
         
         # Return URL path for the audio file
         return f"/audio/{audio_id}"
         
     except Exception as e:
-        print(f"{timestamp()} ❌ TTS error: {str(e)}")
+        print(f"Error generating TTS audio: {str(e)}")
         return None
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
-    print(f"\n{timestamp()} 🔌 WebSocket connection from {websocket.client}")
+    print(f"WebSocket connection attempt from {websocket.client}")
     await websocket.accept()
-    print(f"{timestamp()} ✓ WebSocket connected")
+    print("WebSocket connection accepted")
     
     # Initialize audio stream handler with current event loop
     loop = asyncio.get_event_loop()
@@ -529,34 +467,53 @@ async def websocket_endpoint(websocket: WebSocket):
     # Track conversation
     conversation = []
     
-    # Create a task to continuously check for transcripts
-    async def process_transcripts():
-        """Continuously check for and process transcripts"""
+    try:
+        print("Starting message loop...")
         while True:
-            try:
+            # Receive message from client (could be JSON or binary audio)
+            message = await websocket.receive()
+            
+            if "text" in message:
+                # JSON message
+                data = json.loads(message["text"])
+                print(f"Received: {data}")
+                
+                if data.get("type") == "audio_config":
+                    # Client is configuring audio settings
+                    print(f"Audio config received: {data}")
+                    
+                elif data.get("type") == "interrupt":
+                    # Cancel all active tasks
+                    print(f"Interruption received, cancelling {len(active_tasks)} active tasks...")
+                    for task in active_tasks:
+                        if not task.done():
+                            task.cancel()
+                    active_tasks.clear()
+                    current_generation_id += 1  # Increment ID to invalidate old responses
+                    
+            elif "bytes" in message:
+                # Binary audio data
+                audio_data = message["bytes"]
+                await audio_handler.add_audio(audio_data)
+                
                 # Check for complete transcripts
                 transcript = await audio_handler.get_transcript()
                 if transcript:
-                    response_pipeline_start = time.time()
-                    # Calculate delay from speech end
-                    if audio_handler.speech_start_time:
-                        transcript_delay = response_pipeline_start - audio_handler.speech_start_time
-                        print(f"\n{timestamp()} 📝 Transcript: '{transcript}' (received {transcript_delay:.2f}s after speech start)")
-                    else:
-                        print(f"\n{timestamp()} 📝 Transcript: '{transcript}'")
-                    print(f"{timestamp()} ⏱️  Starting response pipeline...")
+                    print(f"[MAIN] Transcript received: {transcript}")
+                    response_start_time = time.time()
                     
                     # Pause listening while we process the response
                     audio_handler.pause_listening()
                     
+                    # Add to conversation
+                    conversation.append({"role": "user", "content": transcript})
+                    
                     # Start streaming response
                     await websocket.send_json({
-                        "type": "stream_start",
-                        "timestamp": time.time()
+                        "type": "stream_start"
                     })
                     
                     # Increment generation ID for this response
-                    nonlocal current_generation_id
                     current_generation_id += 1
                     generation_id = current_generation_id
                     
@@ -570,9 +527,6 @@ async def websocket_endpoint(websocket: WebSocket):
                             first_sentence = ""
                             first_tts_task = None
                             
-                            # Track timing
-                            llm_start = time.time()
-                            
                             async for text_chunk in generate_gemini_response_stream(transcript, conversation):
                                 if gen_id != current_generation_id:
                                     raise asyncio.CancelledError()
@@ -582,8 +536,7 @@ async def websocket_endpoint(websocket: WebSocket):
                                 # Send text chunk immediately
                                 await websocket.send_json({
                                     "type": "text_chunk",
-                                    "text": text_chunk,
-                                    "timestamp": time.time()
+                                    "text": text_chunk
                                 })
                                 
                                 # Generate TTS for first sentence ASAP
@@ -592,7 +545,7 @@ async def websocket_endpoint(websocket: WebSocket):
                                     match = re.search(r'^(.*?[.!?])\s*', full_response)
                                     if match:
                                         first_sentence = match.group(1)
-                                        print(f"{timestamp()} 🎯 First sentence ready, starting TTS")
+                                        print(f"[FAST] Generating TTS for first sentence: {first_sentence}")
                                         first_tts_task = asyncio.create_task(
                                             generate_tts_audio_fast(first_sentence)
                                         )
@@ -603,27 +556,24 @@ async def websocket_endpoint(websocket: WebSocket):
                             if first_tts_task:
                                 audio_url = await first_tts_task
                                 if audio_url:
-                                    first_audio_time = time.time() - response_pipeline_start
-                                    print(f"{timestamp()} 🎉 First audio ready in {first_audio_time:.2f}s from user stop")
+                                    first_audio_time = time.time() - response_start_time
+                                    print(f"[TIMING] First audio ready in {first_audio_time:.2f}s")
                                     
                                     await websocket.send_json({
                                         "type": "audio_chunk",
                                         "audio_url": audio_url,
-                                        "text": first_sentence,
-                                        "timestamp": time.time()
+                                        "text": first_sentence
                                     })
                             
                             # Generate TTS for remaining text if any
                             remaining_text = full_response[len(first_sentence):].strip()
                             if remaining_text and remaining_text not in ["", "."]:
-                                print(f"{timestamp()} 🔊 TTS: Generating remaining audio")
                                 remaining_audio_url = await generate_tts_audio_fast(remaining_text)
                                 if remaining_audio_url:
                                     await websocket.send_json({
                                         "type": "audio_chunk",
                                         "audio_url": remaining_audio_url,
-                                        "text": remaining_text,
-                                        "timestamp": time.time()
+                                        "text": remaining_text
                                     })
                             
                             # Add complete response to conversation
@@ -632,41 +582,21 @@ async def websocket_endpoint(websocket: WebSocket):
                             # Send stream complete
                             await websocket.send_json({
                                 "type": "stream_complete",
-                                "full_text": full_response,
-                                "timestamp": time.time()
+                                "full_text": full_response
                             })
                             
-                            total_time = time.time() - response_pipeline_start
-                            print(f"{timestamp()} ✅ Response pipeline complete in {total_time:.2f}s")
-                            
-                            # Calculate actual user-perceived delay
-                            if audio_handler.speech_start_time:
-                                user_perceived_delay = time.time() - audio_handler.speech_start_time
-                                speech_to_audio_delay = first_audio_time
-                                print(f"{timestamp()} 📊 Timing Breakdown:")
-                                print(f"    • Speech duration: {(response_pipeline_start - audio_handler.speech_start_time):.2f}s")
-                                print(f"    • VAD silence detection: 0.2s (aggressive)")  
-                                print(f"    • Whisper transcription: ~0.6s (speculative)")
-                                print(f"    • LLM first token: {(llm_start - response_pipeline_start):.2f}s")
-                                print(f"    • TTS generation: {(first_audio_time - (llm_start - response_pipeline_start)):.2f}s")
-                                print(f"    • 🎯 Total delay (speech end → audio): {first_audio_time:.2f}s\n")
-                            else:
-                                print(f"{timestamp()} 📊 Standard Breakdown:")
-                                print(f"    • VAD + Whisper: ~0.8s (speculative)")
-                                print(f"    • LLM first token: {(llm_start - response_pipeline_start):.2f}s")
-                                print(f"    • TTS generation: {(first_audio_time - (llm_start - response_pipeline_start)):.2f}s")
-                                print(f"    • Total: {total_time:.2f}s\n")
+                            total_time = time.time() - response_start_time
+                            print(f"[TIMING] Total response time: {total_time:.2f}s")
                             
                             # Resume listening for user input
                             audio_handler.resume_listening()
                             
                         except asyncio.CancelledError:
-                            print(f"{timestamp()} ❌ Stream cancelled (interruption)")
+                            print("Stream cancelled due to interruption")
                             await websocket.send_json({
                                 "type": "stream_complete",
                                 "full_text": full_response,
-                                "interrupted": True,
-                                "timestamp": time.time()
+                                "interrupted": True
                             })
                             audio_handler.resume_listening()
                             raise
@@ -679,59 +609,19 @@ async def websocket_endpoint(websocket: WebSocket):
                     try:
                         await stream_task
                     except asyncio.CancelledError:
-                        pass
+                        print("[MAIN] stream_task was cancelled")
                     except Exception as e:
-                        print(f"{timestamp()} ❌ Stream error: {e}")
+                        print(f"[MAIN] stream_task failed: {e}")
                         import traceback
                         traceback.print_exc()
-                        
-            except Exception as e:
-                print(f"{timestamp()} ❌ Transcript processing error: {e}")
-                import traceback
-                traceback.print_exc()
-            
-            # Small delay to prevent busy loop
-            await asyncio.sleep(0.01)
-    
-    # Start the transcript processing task
-    transcript_task = asyncio.create_task(process_transcripts())
-    
-    try:
-        while True:
-            # Receive message from client (could be JSON or binary audio)
-            message = await websocket.receive()
-            
-            if "text" in message:
-                # JSON message
-                data = json.loads(message["text"])
-                
-                if data.get("type") == "audio_config":
-                    # Client is configuring audio settings
-                    print(f"{timestamp()} ⚙️  Audio config received")
-                    
-                elif data.get("type") == "interrupt":
-                    # Cancel all active tasks
-                    print(f"{timestamp()} 🛑 Interruption - cancelling {len(active_tasks)} tasks")
-                    for task in active_tasks:
-                        if not task.done():
-                            task.cancel()
-                    active_tasks.clear()
-                    current_generation_id += 1  # Increment ID to invalidate old responses
-                    
-            elif "bytes" in message:
-                # Binary audio data
-                audio_data = message["bytes"]
-                await audio_handler.add_audio(audio_data)
                     
     except WebSocketDisconnect:
-        print(f"{timestamp()} 🔌 Client disconnected")
-        transcript_task.cancel()
+        print("Client disconnected normally")
         await audio_handler.stop()
     except Exception as e:
-        print(f"{timestamp()} ❌ WebSocket error: {type(e).__name__}: {e}")
+        print(f"WebSocket error: {type(e).__name__}: {e}")
         import traceback
         traceback.print_exc()
-        transcript_task.cancel()
         await audio_handler.stop()
 
 @app.get("/audio/{audio_id}")
@@ -762,10 +652,6 @@ async def cleanup_audio_files():
 
 @app.on_event("startup")
 async def startup_event():
-    print("\n" + "="*60)
-    print("🚀 Voice Agent Server Starting...")
-    print("="*60)
-    
     # Start cleanup task
     asyncio.create_task(cleanup_audio_files())
     
@@ -775,26 +661,19 @@ async def startup_event():
         try:
             mcp_client = MCPClient(MCP_URL)
             await mcp_client.initialize()
-            print("✓ MCP client initialized")
+            print("MCP client initialized successfully")
         except Exception as e:
-            print(f"✗ MCP client failed: {e}")
+            print(f"Failed to initialize MCP client: {e}")
             mcp_client = None
-    
-    print("="*60)
-    print("✓ Server ready at http://localhost:8000")
-    print("="*60 + "\n")
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    print("\n" + "="*60)
-    print("👋 Shutting down server...")
     # Close MCP client
     global mcp_client
     if mcp_client:
         await mcp_client.close()
-        print("✓ MCP client closed")
-    print("="*60 + "\n")
+        print("MCP client closed")
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True, log_level="warning")
+    uvicorn.run("main_fast:app", host="0.0.0.0", port=8000, reload=True, log_level="info")
