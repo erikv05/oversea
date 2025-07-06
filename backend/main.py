@@ -118,18 +118,10 @@ class AudioStreamHandler:
             
     def pause_listening(self):
         """Pause processing user speech (during agent response)"""
-        print("Pausing user speech processing")
+        print("Pausing user speech processing (but still detecting interruptions)")
         self.is_listening_for_user = False
-        # Clear the audio queue to prevent stale audio
-        cleared = 0
-        while not self.audio_queue.empty():
-            try:
-                self.audio_queue.get_nowait()
-                cleared += 1
-            except queue.Empty:
-                break
-        if cleared > 0:
-            print(f"Cleared {cleared} audio chunks from queue")
+        # Don't clear the audio queue - we need it for interruption detection
+        self.pending_transcript = ""  # Clear any pending transcript
         
     def resume_listening(self):
         """Resume processing user speech (after agent response)"""
@@ -260,8 +252,19 @@ class AudioStreamHandler:
                                     )
                                     print(f"[STT] Sent interim transcript to frontend: {display_text}")
                         else:
+                            # Even when not actively listening for commands, detect interruptions
                             if transcript.strip():
-                                print(f"[STT] Ignoring transcript (not listening): {transcript}")
+                                print(f"[STT] Speech detected during agent response: {transcript}")
+                                # Send interruption signal if user is speaking
+                                if len(transcript.strip()) > 3:  # More than just noise
+                                    print(f"[STT] User interruption detected!")
+                                    asyncio.run_coroutine_threadsafe(
+                                        self.websocket.send_json({
+                                            "type": "user_interruption",
+                                            "text": transcript
+                                        }),
+                                        self.loop
+                                    )
                                 
                 print(f"[STT] Stream ended - is_running: {self.is_running}, is_listening: {self.is_listening_for_user}")
                                 
