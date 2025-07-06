@@ -617,40 +617,39 @@ const CreateNewPage: React.FC = () => {
           </div>
         </div>
 
-      </div>
-
-      {/* Fixed Navigation Buttons - Always visible at bottom of main content area */}
-      <div className="fixed bottom-0 left-0 right-0 bg-black border-t border-neutral-800/30 p-4 z-50">
-        <div className="flex items-center justify-end space-x-4 pr-6">
-          {getPreviousStepLabel() && (
-            <button 
-              onClick={goToPreviousStep}
-              className="bg-neutral-900/80 hover:bg-neutral-800/90 border border-neutral-700/50 hover:border-neutral-600 text-neutral-300 hover:text-white font-medium px-4 py-2 rounded-full transition-all duration-200 flex items-center space-x-2 w-40"
-            >
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
-              </svg>
-              <div className="flex-1 text-left">
-                <div className="text-sm font-medium leading-tight">Back</div>
-                <div className="text-xs text-neutral-500 truncate leading-tight">{getPreviousStepLabel()}</div>
-              </div>
-            </button>
-          )}
-          
-          {getNextStepLabel() && (
-            <button 
-              onClick={goToNextStep}
-              className="bg-blue-600 hover:bg-blue-500 text-white font-medium px-4 py-2 rounded-full transition-all duration-200 flex items-center space-x-2 shadow-lg hover:shadow-xl w-40"
-            >
-              <div className="flex-1 text-left">
-                <div className="text-sm font-medium leading-tight">Next</div>
-                <div className="text-xs text-blue-200 truncate leading-tight">{getNextStepLabel()}</div>
-              </div>
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-              </svg>
-            </button>
-          )}
+        {/* Fixed Navigation Buttons - Only spans main content area */}
+        <div className="bg-neutral-950/80 backdrop-blur-sm border-t border-neutral-800/30 p-4">
+          <div className="flex items-center justify-end space-x-3 pr-6">
+            {getPreviousStepLabel() && (
+              <button 
+                onClick={goToPreviousStep}
+                className="bg-neutral-900/40 hover:bg-neutral-800/60 border border-neutral-800/30 text-neutral-300 hover:text-white font-medium px-4 py-2.5 rounded-2xl transition-all duration-200 flex items-center space-x-2 w-40"
+              >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+                </svg>
+                <div className="text-left flex-1">
+                  <div className="text-sm font-medium leading-tight text-blue-400">Back</div>
+                  <div className="text-xs text-neutral-500 truncate leading-tight">{getPreviousStepLabel()}</div>
+                </div>
+              </button>
+            )}
+            
+            {getNextStepLabel() && (
+              <button 
+                onClick={goToNextStep}
+                className="bg-blue-600/20 hover:bg-blue-600/30 border border-blue-500/20 text-white font-medium px-4 py-2.5 rounded-2xl transition-all duration-200 flex items-center space-x-2 w-40"
+              >
+                <div className="text-left flex-1">
+                  <div className="text-sm font-medium leading-tight text-blue-400">Next</div>
+                  <div className="text-xs text-blue-300 truncate leading-tight">{getNextStepLabel()}</div>
+                </div>
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                </svg>
+              </button>
+            )}
+          </div>
         </div>
       </div>
     </div>
