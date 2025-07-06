@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { AudioPlayer } from "../AudioPlayer";
+import { AudioStreamer } from "../AudioStreamer";
 
 function Agent() {
   const [isListening, setIsListening] = useState(false);
@@ -9,19 +10,14 @@ function Agent() {
   >([]);
   const conversationRef = useRef<Array<{ role: string; content: string }>>([]);
   const [isProcessing, setIsProcessing] = useState(false);
-  const [streamingText, setStreamingText] = useState("");
-  const [isStreaming, setIsStreaming] = useState(false);
-  const recognitionRef = useRef<any>(null);
+  const audioStreamerRef = useRef<AudioStreamer | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const isInitialized = useRef(false);
   const isListeningRef = useRef(false);
   const isProcessingRef = useRef(false);
-  const silenceTimerRef = useRef<NodeJS.Timeout | null>(null);
   const currentResponseRef = useRef("");
   const audioPlayerRef = useRef<AudioPlayer | null>(null);
-  const speechBufferRef = useRef("");
-  const lastSpeechTimeRef = useRef(Date.now());
   const pendingResponseRef = useRef<string | null>(null);
 
   useEffect(() => {
@@ -99,7 +95,7 @@ function Agent() {
           }
           break;
 
-        case "stream_start":
+        case "stream_start": {
           console.log("Stream started");
 
           // Check if this response is still wanted
@@ -135,16 +131,14 @@ function Agent() {
           });
 
           currentResponseRef.current = "";
-          setStreamingText("");
-          setIsStreaming(true);
           setIsProcessing(true);
           isProcessingRef.current = true;
           break;
+        }
 
-        case "text_chunk":
+        case "text_chunk": {
           // Update the streaming text
           currentResponseRef.current += data.text;
-          setStreamingText(currentResponseRef.current);
           setConversation((prev) => {
             const newConv = [...prev];
             if (
@@ -157,8 +151,9 @@ function Agent() {
             return newConv;
           });
           break;
+        }
 
-        case "audio_chunk":
+        case "audio_chunk": {
           // Queue audio chunk for playback
           const audioUrl = `http://localhost:8000${data.audio_url}`;
           console.log("Received audio chunk:", audioUrl, "Text:", data.text);
@@ -175,25 +170,51 @@ function Agent() {
             audioPlayerRef.current.addToQueue(audioUrl, data.text);
           }
           break;
+        }
 
         case "interim_transcript":
-          // Show real-time speech during agent response
-          console.log("Interim transcript received:", data.text);
-          if (isProcessingRef.current || (audioPlayerRef.current && audioPlayerRef.current.isPlaying())) {
+          {
+            // Show interim transcript
+            console.log("Interim transcript received:", data.text);
             setTranscript(data.text);
+            
+            // If AI is speaking and user starts talking, interrupt
+            const isAudioPlaying = audioPlayerRef.current?.isPlaying() || false;
+            if ((isProcessingRef.current || isAudioPlaying) && data.text.trim().length > 0) {
+              console.log("User speaking (interim), interrupting AI...");
+              interruptAI();
+            }
+            break;
+          }
+
+        case "user_transcript": {
+          console.log("User transcript received:", data.text);
+          setTranscript("");
+          
+          // Add to conversation
+          const userMessage = data.text;
+          setConversation(prev => {
+            const newConv = [...prev, { role: "user", content: userMessage }];
+            conversationRef.current = newConv;
+            return newConv;
+          });
+          
+          // Send to backend for processing
+          if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+            wsRef.current.send(
+              JSON.stringify({
+                type: "message",
+                content: userMessage,
+                conversation: conversationRef.current,
+              })
+            );
+            pendingResponseRef.current = userMessage;
           }
           break;
+        }
 
-        case "user_transcript":
-          console.log("User transcript received:", data.text);
-          // Clear the transcript display since it's been processed
-          setTranscript("");
-          break;
-
-        case "stream_complete":
+        case "stream_complete": {
           console.log("Stream complete, full text:", data.full_text);
-          setIsStreaming(false);
-          setStreamingText("");
 
           // Only update conversation if not interrupted
           if (!data.interrupted) {
@@ -233,266 +254,57 @@ function Agent() {
             });
           }
 
-          // If no audio was played yet, we can fully reset
-          if (pendingResponseRef.current) {
-            pendingResponseRef.current = null;
+          // Reset processing state when stream completes
+          pendingResponseRef.current = null;
+          if (!audioPlayerRef.current || !audioPlayerRef.current.isPlaying()) {
             setIsProcessing(false);
             isProcessingRef.current = false;
           }
           break;
+        }
       }
     };
 
-    // Initialize speech recognition
-    const SpeechRecognition =
-      (window as any).SpeechRecognition ||
-      (window as any).webkitSpeechRecognition;
-    if (!SpeechRecognition) {
-      console.error("Speech Recognition API not supported in this browser");
-      alert(
-        "Your browser does not support speech recognition. Please use Chrome, Edge, or Safari."
-      );
-      return;
-    }
-
-    // Detect browser
-    const isSafari = /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
-    const isChrome =
-      /chrome/i.test(navigator.userAgent) &&
-      /google inc/i.test(navigator.vendor);
-    console.log(
-      `Browser detected: ${isSafari ? "Safari" : isChrome ? "Chrome" : "Other"}`
-    );
-
-    try {
-      const recognition = new SpeechRecognition();
-      recognition.continuous = true;
-      recognition.interimResults = true;
-      recognition.lang = "en-US";
-      recognition.maxAlternatives = 1;
-
-      // Add handlers for start/end events
-      recognition.onstart = () => {
-        console.log("Speech recognition started");
-      };
-
-      recognition.onend = () => {
-        console.log("Speech recognition ended");
-        // Always restart if session is active
-        if (isListeningRef.current) {
-          console.log("Restarting speech recognition...");
-          setTimeout(() => {
-            if (recognitionRef.current && isListeningRef.current) {
-              try {
-                recognitionRef.current.start();
-              } catch (e) {
-                console.log("Could not restart:", e);
-              }
-            }
-          }, 100);
-        }
-      };
-
-      recognition.onresult = (event: any) => {
-        const current = event.resultIndex;
-        const transcript = event.results[current][0].transcript;
-        const isFinal = event.results[current].isFinal;
-
-        // Update transcript display
-        setTranscript(transcript);
-        lastSpeechTimeRef.current = Date.now();
-
-        // Log recognition activity during audio playback
-        if (audioPlayerRef.current && audioPlayerRef.current.isPlaying()) {
-          console.log(`Speech detected during playback - Final: ${isFinal}, Text: "${transcript}"`);
-        }
-
-        // If AI is speaking/processing and user starts talking, interrupt
-        if (
-          (isProcessingRef.current || pendingResponseRef.current || 
-           (audioPlayerRef.current && audioPlayerRef.current.isPlaying())) &&
-          transcript.trim().length > 3
-        ) {
-          console.log("User speaking, interrupting AI...");
-          interruptAI();
-          speechBufferRef.current = ""; // Clear buffer on interrupt
-        }
-
-        // Only process final results
-        if (event.results[current].isFinal) {
-          // Add to speech buffer
-          speechBufferRef.current +=
-            (speechBufferRef.current ? " " : "") + transcript;
-          console.log("Speech buffer:", speechBufferRef.current);
-
-          // Clear existing silence timer
-          if (silenceTimerRef.current) {
-            clearTimeout(silenceTimerRef.current);
-            silenceTimerRef.current = null;
-          }
-
-          // Set new silence timer
-          silenceTimerRef.current = setTimeout(() => {
-            if (
-              speechBufferRef.current.trim() &&
-              !pendingResponseRef.current &&
-              !isProcessingRef.current
-            ) {
-              // User has stopped speaking, process their input
-              const userInput = speechBufferRef.current.trim();
-              console.log("Processing user input:", userInput);
-
-              // Mark that we have a pending response
-              pendingResponseRef.current = userInput;
-
-              // Send to backend WITH the current conversation state
-              if (
-                wsRef.current &&
-                wsRef.current.readyState === WebSocket.OPEN
-              ) {
-                // Use conversation ref which is always up to date
-                const currentConversation = conversationRef.current;
-                console.log(
-                  "Sending message with conversation history:",
-                  currentConversation
-                );
-
-                wsRef.current.send(
-                  JSON.stringify({
-                    type: "message",
-                    content: userInput,
-                    conversation: currentConversation,
-                  })
-                );
-              }
-
-              // Clear the buffer and transcript
-              speechBufferRef.current = "";
-              setTranscript("");
-            }
-          }, 700); // Wait 700ms of silence
-        }
-      };
-
-      recognition.onerror = (event: any) => {
-        console.error("Speech recognition error:", event.error);
-
-        // Handle specific error types
-        if (event.error === "network") {
-          console.log(
-            "Network error - Chrome cannot reach Google Speech API. Try using Safari."
-          );
-          setIsListening(false);
-          isListeningRef.current = false;
-          alert(
-            "Speech recognition network error in Chrome.\n\nThis usually happens due to:\n• Firewall/VPN blocking Google Speech API\n• Corporate network restrictions\n• Browser extensions\n\nTry using Safari instead, which uses Apple's speech service."
-          );
-        } else if (event.error === "not-allowed") {
-          setIsListening(false);
-          isListeningRef.current = false;
-          alert(
-            "Microphone access denied. Please allow microphone access and refresh the page."
-          );
-        } else if (event.error === "no-speech") {
-          console.log("No speech detected");
-          // Don't stop listening on no-speech
-        } else if (event.error === "aborted") {
-          console.log("Speech recognition aborted");
-          setIsListening(false);
-          isListeningRef.current = false;
-        } else {
-          console.error("Unknown speech recognition error:", event.error);
-          setIsListening(false);
-          isListeningRef.current = false;
-        }
-      };
-
-      recognitionRef.current = recognition;
-    } catch (error) {
-      console.error("Failed to initialize speech recognition:", error);
-      alert(
-        "Failed to initialize speech recognition. Please check your browser settings."
-      );
-    }
+    // No browser speech recognition - using Google Cloud STT via backend
 
     return () => {
       console.log("Cleanup function called");
-      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      const ws = wsRef.current;
+      const audioStreamer = audioStreamerRef.current;
+      
+      if (ws && ws.readyState === WebSocket.OPEN) {
         console.log("Closing WebSocket in cleanup");
-        wsRef.current.close();
+        ws.close();
       }
-      if (recognitionRef.current) {
-        try {
-          recognitionRef.current.stop();
-        } catch (e) {
-          console.log("Error stopping recognition:", e);
-        }
+      if (audioStreamer) {
+        audioStreamer.stop();
       }
       isInitialized.current = false;
     };
   }, []);
 
   const startListening = async () => {
-    if (recognitionRef.current && !isProcessing) {
+    if (audioStreamerRef.current) {
       try {
-        // First check if we have microphone permission
-        const stream = await navigator.mediaDevices.getUserMedia({
-          audio: true,
-        });
-        stream.getTracks().forEach((track) => track.stop()); // Stop the test stream
-
-        recognitionRef.current.start();
+        audioStreamerRef.current.start();
         setTranscript("");
-        console.log("Speech recognition started successfully");
-      } catch (error: any) {
-        console.error("Error starting speech recognition:", error);
-
-        if (
-          error.name === "NotAllowedError" ||
-          error.name === "PermissionDeniedError"
-        ) {
-          alert(
-            "Microphone permission denied. Please allow microphone access in your browser settings."
-          );
-          setIsListening(false);
-          isListeningRef.current = false;
-        } else if (error.message && error.message.includes("already started")) {
-          // If already started, stop and restart
-          try {
-            recognitionRef.current.stop();
-            setTimeout(() => {
-              recognitionRef.current.start();
-              setTranscript("");
-            }, 100);
-          } catch (e) {
-            console.error("Failed to restart speech recognition:", e);
-          }
-        } else {
-          alert(
-            `Failed to start speech recognition: ${error.message || error}`
-          );
-          setIsListening(false);
-          isListeningRef.current = false;
-        }
+        console.log("Audio streaming started successfully");
+      } catch (error) {
+        console.error("Error starting audio streaming:", error);
+        alert("Failed to start audio streaming. Please check microphone permissions.");
+        setIsListening(false);
+        isListeningRef.current = false;
       }
     }
   };
 
   const stopListening = () => {
-    if (recognitionRef.current) {
-      try {
-        recognitionRef.current.stop();
-      } catch (e) {
-        console.log("Error stopping recognition:", e);
-      }
+    if (audioStreamerRef.current) {
+      audioStreamerRef.current.stop();
     }
     if (audioRef.current) {
       audioRef.current.pause();
       audioRef.current = null;
-    }
-    if (silenceTimerRef.current) {
-      clearTimeout(silenceTimerRef.current);
-      silenceTimerRef.current = null;
     }
     // Stop audio player
     if (audioPlayerRef.current) {
@@ -523,11 +335,8 @@ function Agent() {
     // Reset states
     setIsProcessing(false);
     isProcessingRef.current = false;
-    setIsStreaming(false);
-    setStreamingText("");
 
-    // Clear speech buffer and transcript
-    speechBufferRef.current = "";
+    // Clear transcript
     setTranscript("");
   };
 

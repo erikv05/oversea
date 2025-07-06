@@ -86,9 +86,8 @@ class AudioStreamHandler:
         self.speech_thread = None
         self.last_speech_time = time.time()
         self.pending_transcript = ""
-        self.silence_threshold = 1.0  # 1 second of silence triggers response
+        self.silence_threshold = 0.7  # 700ms of silence triggers response
         self.is_listening_for_user = True  # Track if we should process user speech
-        self.force_restart_stt = False  # Signal to force restart STT stream
         
     async def start(self):
         """Start the audio processing thread"""
@@ -113,8 +112,8 @@ class AudioStreamHandler:
         if self.is_running:
             self.audio_queue.put(audio_data)
             # Log periodically to track audio flow
-            if len(audio_data) > 0 and time.time() % 10 < 0.1:
-                print(f"[Audio] Adding audio - listening: {self.is_listening_for_user}, queue size: {self.audio_queue.qsize()}")
+            if len(audio_data) > 0 and int(time.time()) % 5 == 0 and time.time() % 1 < 0.1:
+                print(f"[Audio] Adding audio - listening: {self.is_listening_for_user}, queue size: {self.audio_queue.qsize()}, bytes: {len(audio_data)}")
             
     def pause_listening(self):
         """Pause processing user speech (during agent response)"""
@@ -129,8 +128,8 @@ class AudioStreamHandler:
         self.is_listening_for_user = True
         self.pending_transcript = ""  # Clear any pending transcript
         self.last_speech_time = time.time()  # Reset silence timer
-        self.force_restart_stt = True  # Force restart STT to ensure fresh stream
-        print(f"[RESUME] Set is_listening_for_user=True, force_restart_stt=True")
+        # Don't force restart - keep the stream running for instant response
+        print(f"[RESUME] Set is_listening_for_user=True")
         print(f"[RESUME] Current state - is_running: {self.is_running}, speech_thread alive: {self.speech_thread.is_alive() if self.speech_thread else 'None'}")
             
     async def get_transcript(self) -> Optional[str]:
@@ -164,115 +163,152 @@ class AudioStreamHandler:
         
         # Continuously restart recognition to handle streaming limits
         while self.is_running:
+            audio_generator_active = False
             try:
                 print(f"[STT] Starting new Google STT stream (is_listening: {self.is_listening_for_user})...")
                 
                 # Audio generator that yields chunks from the queue
                 def audio_generator():
+                    nonlocal audio_generator_active
+                    audio_generator_active = True
+                    
                     # Google STT has a ~5 minute limit, so we'll restart periodically
                     start_time = time.time()
+                    last_audio_time = time.time()
                     chunks_sent = 0
+                    consecutive_empty = 0
                     print("[STT] Audio generator started")
                     
-                    # Reset force restart flag at the beginning of new stream
-                    if self.force_restart_stt:
-                        print("[STT] Resetting force_restart_stt flag")
-                        self.force_restart_stt = False
-                    
                     while self.is_running and (time.time() - start_time) < 240:  # 4 minutes
-                        # Check if we need to force restart
-                        if self.force_restart_stt:
-                            print("[STT] Force restart requested during stream, breaking audio generator")
-                            break
-                            
                         try:
-                            # Get audio with timeout to allow periodic checks
-                            chunk = self.audio_queue.get(timeout=0.1)
+                            # Try to get audio with very short timeout
+                            chunk = self.audio_queue.get(timeout=0.01)
+                            
                             if chunk is None:
                                 print("[STT] Received None chunk, breaking")
                                 break
+                            
+                            # Reset empty counter when we get data
+                            consecutive_empty = 0
+                            last_audio_time = time.time()
+                            
+                            # Send audio immediately to maintain real-time stream
                             chunks_sent += 1
                             if chunks_sent % 50 == 0:  # Log every 50 chunks
-                                print(f"[STT] Sent {chunks_sent} audio chunks to Google STT")
+                                print(f"[STT] Sent {chunks_sent} audio chunks to Google STT, queue size: {self.audio_queue.qsize()}")
+                            
                             yield speech.StreamingRecognizeRequest(audio_content=chunk)
+                                
                         except queue.Empty:
-                            continue
+                            consecutive_empty += 1
+                            
+                            # If no audio for too long, break to avoid timeout
+                            if time.time() - last_audio_time > 10.0:  # 10 seconds without audio
+                                print(f"[STT] No audio for 10 seconds, ending stream to avoid timeout")
+                                break
+                            
+                            # Small sleep to prevent busy waiting
+                            time.sleep(0.001)
+                    
+                    audio_generator_active = False
                     print(f"[STT] Audio generator ended after {chunks_sent} chunks")
                 
-                # Start streaming recognition
-                responses = speech_client.streaming_recognize(
-                    streaming_config, 
-                    audio_generator()
-                )
-                
-                # Process responses
-                for response in responses:
-                    if not self.is_running:
-                        break
+                # Only start streaming recognition if we have audio to process
+                # Check if there's audio in the queue before starting
+                if self.audio_queue.qsize() > 0 or self.is_listening_for_user:
+                    # Start streaming recognition
+                    responses = speech_client.streaming_recognize(
+                        streaming_config, 
+                        audio_generator()
+                    )
                     
-                    # Check if we need to restart the stream
-                    if self.force_restart_stt:
-                        print("[STT] Force restart detected in response loop, breaking")
-                        break
+                    # Process responses
+                    for response in responses:
+                        if not self.is_running:
+                            break
                         
-                    for result in response.results:
-                        transcript = result.alternatives[0].transcript
-                        
-                        # Only process transcripts if we're listening for user input
-                        if self.is_listening_for_user:
-                            if result.is_final:
-                                # Final result - add to pending transcript
-                                self.pending_transcript += " " + transcript
-                                self.last_speech_time = time.time()
-                                print(f"[STT] Final transcript: {transcript}")
-                                print(f"[STT] Accumulated transcript: {self.pending_transcript.strip()}")
-                                
-                                # Send the accumulated transcript for display
-                                asyncio.run_coroutine_threadsafe(
-                                    self.websocket.send_json({
-                                        "type": "interim_transcript",
-                                        "text": self.pending_transcript.strip()
-                                    }),
-                                    self.loop
-                                )
-                                print(f"[STT] Sent final transcript to frontend")
-                            else:
-                                # Interim result - update display with full pending + interim
-                                if transcript.strip():
+                            
+                        for result in response.results:
+                            transcript = result.alternatives[0].transcript
+                            
+                            # Only process transcripts if we're listening for user input
+                            if self.is_listening_for_user:
+                                if result.is_final:
+                                    # Final result - add to pending transcript
+                                    self.pending_transcript += " " + transcript
                                     self.last_speech_time = time.time()
-                                    print(f"[STT] Interim transcript: {transcript}")
-                                    # Show accumulated text plus current interim
-                                    display_text = (self.pending_transcript + " " + transcript).strip()
+                                    print(f"[STT] Final transcript (listening=True): {transcript}")
+                                    print(f"[STT] Accumulated transcript: {self.pending_transcript.strip()}")
+                                
+                                    # Send the accumulated transcript for display
                                     asyncio.run_coroutine_threadsafe(
                                         self.websocket.send_json({
                                             "type": "interim_transcript",
-                                            "text": display_text
+                                            "text": self.pending_transcript.strip()
                                         }),
                                         self.loop
                                     )
-                                    print(f"[STT] Sent interim transcript to frontend: {display_text}")
-                        else:
-                            # Even when not actively listening for commands, detect interruptions
-                            if transcript.strip():
-                                print(f"[STT] Speech detected during agent response: {transcript}")
-                                # Send interruption signal if user is speaking
-                                if len(transcript.strip()) > 3:  # More than just noise
-                                    print(f"[STT] User interruption detected!")
-                                    asyncio.run_coroutine_threadsafe(
-                                        self.websocket.send_json({
-                                            "type": "user_interruption",
-                                            "text": transcript
-                                        }),
-                                        self.loop
-                                    )
+                                    print(f"[STT] Sent final transcript to frontend")
+                                else:
+                                    # Interim result - update display with full pending + interim
+                                    if transcript.strip():
+                                        self.last_speech_time = time.time()
+                                        print(f"[STT] Interim transcript (listening=True): {transcript}")
+                                        # Show accumulated text plus current interim
+                                        display_text = (self.pending_transcript + " " + transcript).strip()
+                                        asyncio.run_coroutine_threadsafe(
+                                            self.websocket.send_json({
+                                                "type": "interim_transcript",
+                                                "text": display_text
+                                            }),
+                                            self.loop
+                                        )
+                                        print(f"[STT] Sent interim transcript to frontend: {display_text}")
+                            else:
+                                # Even when not actively listening for commands, detect interruptions
+                                if transcript.strip():
+                                    print(f"[STT] Speech detected during agent response: {transcript}")
+                                    # Send interruption signal if user is speaking
+                                    if len(transcript.strip()) > 3:  # More than just noise
+                                        print(f"[STT] User interruption detected!")
+                                        asyncio.run_coroutine_threadsafe(
+                                            self.websocket.send_json({
+                                                "type": "user_interruption",
+                                                "text": transcript
+                                            }),
+                                            self.loop
+                                        )
+                else:
+                    # No audio to process, wait a bit before checking again
+                    print("[STT] No audio in queue, waiting...")
+                    time.sleep(1.0)
                                 
                 print(f"[STT] Stream ended - is_running: {self.is_running}, is_listening: {self.is_listening_for_user}")
+                # Small delay before restarting to ensure smooth transition
+                if self.is_running:
+                    time.sleep(0.1)
                                 
             except Exception as e:
-                print(f"[STT] Error in speech recognition: {e}")
+                error_msg = str(e)
+                print(f"[STT] Error in speech recognition: {error_msg}")
+                
+                # Handle specific error types
+                if "Audio Timeout Error" in error_msg:
+                    print("[STT] Audio timeout detected - this usually means silence or network issues")
+                    # Clear any stale audio from the queue
+                    cleared = 0
+                    while not self.audio_queue.empty() and cleared < 50:
+                        try:
+                            self.audio_queue.get_nowait()
+                            cleared += 1
+                        except queue.Empty:
+                            break
+                    if cleared > 0:
+                        print(f"[STT] Cleared {cleared} stale audio chunks")
+                
                 if self.is_running:
                     print("[STT] Restarting stream after error...")
-                    time.sleep(0.5)  # Brief pause before retry
+                    time.sleep(0.1)  # Shorter pause for faster recovery
             
     def _extract_complete_sentences(self, text: str) -> list[str]:
         """Extract complete sentences from text buffer"""
@@ -301,8 +337,14 @@ class AudioStreamHandler:
     
     def _monitor_silence(self):
         """Monitor for silence and trigger response when user stops speaking"""
+        last_log_time = 0
         while self.is_running:
             try:
+                # Log status every 5 seconds
+                if time.time() - last_log_time > 5:
+                    print(f"[SILENCE] Monitor status - listening: {self.is_listening_for_user}, pending: '{self.pending_transcript.strip()}'")
+                    last_log_time = time.time()
+                    
                 # Only process if we're listening for user input
                 if self.is_listening_for_user and self.pending_transcript.strip():
                     silence_duration = time.time() - self.last_speech_time
@@ -321,7 +363,7 @@ class AudioStreamHandler:
                         # Clear pending transcript
                         self.pending_transcript = ""
                         
-                time.sleep(0.1)  # Check every 100ms
+                time.sleep(0.05)  # Check every 50ms for faster response
             except Exception as e:
                 print(f"[SILENCE] Error in monitor: {e}")
 
