@@ -158,6 +158,10 @@ export class AudioPlayer {
     this.onComplete = callback;
   }
 
+  isPlaying(): boolean {
+    return this.activeSources.size > 0 || this.isProcessingQueue;
+  }
+
   stop() {
     console.log('[AudioPlayer] Stop called');
     this.reset();

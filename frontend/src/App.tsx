@@ -22,6 +22,7 @@ function App() {
   const speechBufferRef = useRef('')
   const lastSpeechTimeRef = useRef(Date.now())
   const pendingResponseRef = useRef<string | null>(null)
+  const lastTranscriptRef = useRef('')
 
   useEffect(() => {
     // Prevent double initialization in development mode
@@ -35,6 +36,7 @@ function App() {
     audioPlayerRef.current = new AudioPlayer()
     audioPlayerRef.current.setOnComplete(() => {
       console.log('All audio finished playing')
+      pendingResponseRef.current = null
       setIsProcessing(false)
       isProcessingRef.current = false
       
@@ -162,8 +164,6 @@ function App() {
           console.log('Current state - pending:', pendingResponseRef.current, 'processing:', isProcessingRef.current)
           
           if (audioPlayerRef.current) {
-            // Clear pending response once audio starts playing
-            pendingResponseRef.current = null
             console.log(`[${new Date().toISOString()}] Adding to audio queue`)
             audioPlayerRef.current.addToQueue(audioUrl, data.text)
           }
@@ -232,6 +232,13 @@ function App() {
       recognition.lang = 'en-US'
       recognition.maxAlternatives = 1
       
+      // Log recognition settings to verify
+      console.log('Speech recognition settings:', {
+        continuous: recognition.continuous,
+        interimResults: recognition.interimResults,
+        lang: recognition.lang
+      })
+      
       // Add handlers for start/end events
       recognition.onstart = () => {
         console.log('Speech recognition started')
@@ -255,60 +262,78 @@ function App() {
       }
       
       recognition.onresult = (event: any) => {
-        const current = event.resultIndex
-        const transcript = event.results[current][0].transcript
+        // Get all current transcripts (both interim and final)
+        let currentTranscript = ''
+        let hasInterim = false
         
-        // Update transcript display
-        setTranscript(transcript)
+        for (let i = event.resultIndex; i < event.results.length; i++) {
+          const result = event.results[i]
+          currentTranscript += result[0].transcript
+          if (!result.isFinal) {
+            hasInterim = true
+          }
+        }
+        
+        console.log(`Speech result - Has interim: ${hasInterim}, Full transcript: "${currentTranscript}"`)
+        
+        // Update transcript display with the full current transcript
+        setTranscript(currentTranscript)
         lastSpeechTimeRef.current = Date.now()
         
-        // If AI is speaking/processing and user starts talking, interrupt
-        if ((isProcessingRef.current || pendingResponseRef.current) && transcript.trim().length > 3) {
-          console.log('User speaking, interrupting AI...')
+        // If AI is speaking/processing and user starts talking, interrupt immediately
+        const isAudioPlaying = audioPlayerRef.current?.isPlaying() || false
+        const shouldInterrupt = (isProcessingRef.current || pendingResponseRef.current || isAudioPlaying) && 
+                               currentTranscript.trim().length > 0
+        
+        if (shouldInterrupt) {
+          console.log(`User speaking (${hasInterim ? 'INTERIM' : 'FINAL'}), interrupting AI... Processing: ${isProcessingRef.current}, Pending: ${pendingResponseRef.current}, Playing: ${isAudioPlaying}`)
           interruptAI()
           speechBufferRef.current = '' // Clear buffer on interrupt
         }
         
-        // Only process final results
-        if (event.results[current].isFinal) {
-          // Add to speech buffer
-          speechBufferRef.current += (speechBufferRef.current ? ' ' : '') + transcript
-          console.log('Speech buffer:', speechBufferRef.current)
-          
-          // Clear existing silence timer
-          if (silenceTimerRef.current) {
-            clearTimeout(silenceTimerRef.current)
-            silenceTimerRef.current = null
-          }
-          
-          // Set new silence timer
-          silenceTimerRef.current = setTimeout(() => {
-            if (speechBufferRef.current.trim() && !pendingResponseRef.current && !isProcessingRef.current) {
-              // User has stopped speaking, process their input
-              const userInput = speechBufferRef.current.trim()
-              console.log('Processing user input:', userInput)
-              
-              // Mark that we have a pending response
-              pendingResponseRef.current = userInput
-              
-              // Send to backend WITH the current conversation state
-              if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-                // Use conversation ref which is always up to date
-                const currentConversation = conversationRef.current
-                console.log('Sending message with conversation history:', currentConversation)
-                
-                wsRef.current.send(JSON.stringify({
-                  type: 'message',
-                  content: userInput,
-                  conversation: currentConversation
-                }))
-              }
-              
-              // Clear the buffer and transcript
-              speechBufferRef.current = ''
-              setTranscript('')
+        // Process final results for sending to backend
+        for (let i = event.resultIndex; i < event.results.length; i++) {
+          if (event.results[i].isFinal) {
+            const finalTranscript = event.results[i][0].transcript
+            // Add to speech buffer
+            speechBufferRef.current += (speechBufferRef.current ? ' ' : '') + finalTranscript
+            console.log('Speech buffer:', speechBufferRef.current)
+            
+            // Clear existing silence timer
+            if (silenceTimerRef.current) {
+              clearTimeout(silenceTimerRef.current)
+              silenceTimerRef.current = null
             }
-          }, 700) // Wait 700ms of silence
+            
+            // Set new silence timer
+            silenceTimerRef.current = setTimeout(() => {
+              if (speechBufferRef.current.trim() && !pendingResponseRef.current && !isProcessingRef.current) {
+                // User has stopped speaking, process their input
+                const userInput = speechBufferRef.current.trim()
+                console.log('Processing user input:', userInput)
+                
+                // Mark that we have a pending response
+                pendingResponseRef.current = userInput
+                
+                // Send to backend WITH the current conversation state
+                if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+                  // Use conversation ref which is always up to date
+                  const currentConversation = conversationRef.current
+                  console.log('Sending message with conversation history:', currentConversation)
+                  
+                  wsRef.current.send(JSON.stringify({
+                    type: 'message',
+                    content: userInput,
+                    conversation: currentConversation
+                  }))
+                }
+                
+                // Clear the buffer and transcript
+                speechBufferRef.current = ''
+                setTranscript('')
+              }
+            }, 700) // Wait 700ms of silence
+          }
         }
       }
       
