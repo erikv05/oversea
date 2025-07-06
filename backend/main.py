@@ -99,14 +99,18 @@ class AudioStreamHandler:
         self.pre_speech_buffer_size = 3200  # 200ms of audio
         self.pre_speech_buffer = bytearray()
         
-        # Optimized thresholds for 1 second total delay
+        # Aggressive thresholds for 1.5 second total delay
         self.energy_threshold = 400  # Higher threshold to avoid noise triggers
         self.speech_start_frames = 5  # 50ms to start (more robust)
-        self.speech_end_frames = 100   # 1000ms of silence (1 second as requested)
+        self.speech_end_frames = 20   # 200ms of silence for aggressive speculation
         self.frame_size = 160  # 10ms frames at 8kHz
         
         # Minimum speech duration
-        self.min_speech_duration = 4000  # 500ms minimum speech (allow shorter utterances)
+        self.min_speech_duration = 3200  # 400ms minimum speech (allow shorter utterances)
+        
+        # Speculative processing
+        self.speculative_task = None
+        self.is_speculating = False
         
         # Transcript handling
         self.transcript_queue = asyncio.Queue()
@@ -124,6 +128,8 @@ class AudioStreamHandler:
         self.is_running = False
         if self.processing_task:
             self.processing_task.cancel()
+        if self.speculative_task and not self.speculative_task.done():
+            self.speculative_task.cancel()
             
     async def add_audio(self, audio_data: bytes):
         """Process incoming audio data with VAD"""
@@ -154,6 +160,12 @@ class AudioStreamHandler:
                     self.speech_start_time = time.time()
                     print(f"{timestamp()} 🎤 Speech started (energy: {frame_energy:.0f}, threshold: {self.energy_threshold})")
                     
+                    # Cancel any speculative processing if user resumes speaking
+                    if self.speculative_task and not self.speculative_task.done():
+                        print(f"{timestamp()} ❌ Cancelling speculative processing - user resumed speaking")
+                        self.speculative_task.cancel()
+                        self.is_speculating = False
+                    
                     # Add pre-speech buffer to capture beginning of speech
                     self.speech_buffer.extend(self.pre_speech_buffer)
                     
@@ -174,27 +186,34 @@ class AudioStreamHandler:
                     # Continue adding to buffer during short pauses
                     self.speech_buffer.extend(frame)
                     
-                    # End of speech after 1000ms (1 second)
+                    # Start speculative processing after 200ms of silence
                     if self.silence_counter >= self.speech_end_frames:
-                        # End of speech detected
+                        # Cancel previous speculative task if still running
+                        if self.speculative_task and not self.speculative_task.done():
+                            self.speculative_task.cancel()
+                        
+                        # If we have enough speech, start speculative processing
+                        if len(self.speech_buffer) > self.min_speech_duration and not self.is_speculating:
+                            self.is_speculating = True
+                            speech_duration = time.time() - self.speech_start_time
+                            buffer_size_ms = len(self.speech_buffer) / 16
+                            print(f"{timestamp()} 🔮 Starting speculative processing (200ms silence, {buffer_size_ms:.0f}ms audio)")
+                            
+                            # Create speculative task
+                            self.speculative_task = asyncio.create_task(
+                                self._speculative_process(bytes(self.speech_buffer), speech_duration)
+                            )
+                        
+                        # Consider speech ended after 200ms
                         self.is_speaking = False
-                        speech_duration = time.time() - self.speech_start_time
-                        buffer_size_ms = len(self.speech_buffer) / 16  # 16 bytes per ms at 8kHz
-                        print(f"{timestamp()} 🛑 Speech ended (duration: {speech_duration:.2f}s, buffer: {buffer_size_ms:.0f}ms)")
-                        
-                        # Process the speech segment
-                        if len(self.speech_buffer) > self.min_speech_duration:
-                            await self._process_speech_segment(bytes(self.speech_buffer))
-                        else:
-                            print(f"{timestamp()} ⚠️  Speech too short ({buffer_size_ms:.0f}ms < {self.min_speech_duration/16:.0f}ms), ignoring")
-                        
-                        # Clear the buffer
-                        self.speech_buffer.clear()
-                        
                         await self.websocket.send_json({
                             "type": "speech_end",
                             "timestamp": time.time()
                         })
+                        
+                        # Clear the buffer
+                        self.speech_buffer.clear()
+                        self.is_speculating = False
     
     def _add_to_pre_speech_buffer(self, frame: bytes):
         """Add frame to circular pre-speech buffer"""
@@ -320,6 +339,40 @@ class AudioStreamHandler:
             
             # Add to queue for processing
             await self.transcript_queue.put(transcript_text)
+    
+    async def _speculative_process(self, audio_data: bytes, speech_duration: float):
+        """Speculatively process audio after just 200ms of silence"""
+        try:
+            spec_start = time.time()
+            print(f"{timestamp()} 🔮 [1/3] Starting speculative transcription")
+            
+            # Start transcription immediately
+            transcript_text = await self._transcribe_audio(audio_data)
+            
+            if transcript_text:
+                transcribe_time = time.time() - spec_start
+                print(f"{timestamp()} 🔮 [2/3] Speculative transcript ready: '{transcript_text}' ({transcribe_time:.2f}s)")
+                
+                # Send transcript to frontend
+                await self.websocket.send_json({
+                    "type": "user_transcript",
+                    "text": transcript_text,
+                    "timestamp": time.time()
+                })
+                
+                # Add to queue for processing
+                await self.transcript_queue.put(transcript_text)
+                
+                total_time = time.time() - spec_start
+                print(f"{timestamp()} 🔮 [3/3] Speculative complete in {total_time:.2f}s")
+            else:
+                print(f"{timestamp()} 🔮 Speculative failed - no valid transcript")
+                
+        except asyncio.CancelledError:
+            print(f"{timestamp()} 🔮 Speculative cancelled - user resumed speaking")
+            raise
+        except Exception as e:
+            print(f"{timestamp()} ❌ Speculative error: {e}")
     
     def _convert_to_wav(self, audio_data: bytes) -> bytes:
         """Convert raw PCM audio to WAV format"""
@@ -592,14 +645,14 @@ async def websocket_endpoint(websocket: WebSocket):
                                 speech_to_audio_delay = first_audio_time
                                 print(f"{timestamp()} 📊 Timing Breakdown:")
                                 print(f"    • Speech duration: {(response_pipeline_start - audio_handler.speech_start_time):.2f}s")
-                                print(f"    • VAD silence detection: 1.0s")  
-                                print(f"    • Whisper transcription: ~0.8s")
+                                print(f"    • VAD silence detection: 0.2s (aggressive)")  
+                                print(f"    • Whisper transcription: ~0.6s (speculative)")
                                 print(f"    • LLM first token: {(llm_start - response_pipeline_start):.2f}s")
                                 print(f"    • TTS generation: {(first_audio_time - (llm_start - response_pipeline_start)):.2f}s")
                                 print(f"    • 🎯 Total delay (speech end → audio): {first_audio_time:.2f}s\n")
                             else:
                                 print(f"{timestamp()} 📊 Standard Breakdown:")
-                                print(f"    • VAD + Whisper: ~1.8s")
+                                print(f"    • VAD + Whisper: ~0.8s (speculative)")
                                 print(f"    • LLM first token: {(llm_start - response_pipeline_start):.2f}s")
                                 print(f"    • TTS generation: {(first_audio_time - (llm_start - response_pipeline_start)):.2f}s")
                                 print(f"    • Total: {total_time:.2f}s\n")
