@@ -4,7 +4,7 @@ import time
 from typing import Optional
 from fastapi import WebSocket
 from config.settings import VAD_CONFIG
-from services.whisper_service import transcribe_audio
+from services.deepgram_service import transcribe_audio
 from utils.helpers import timestamp
 
 
