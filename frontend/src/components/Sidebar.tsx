@@ -21,7 +21,7 @@ const Sidebar: React.FC<SidebarProps> = ({ onNavigate }) => {
   };
 
   return (
-    <div className="w-64 h-screen bg-black text-gray-300 flex flex-col border-r border-gray-900">
+    <div className="w-64 h-screen bg-black text-gray-300 flex flex-col border-r border-neutral-800">
       {/* Logo placeholder */}
       <div className="h-16 flex items-center px-6">
         {/* Empty space for logo */}
