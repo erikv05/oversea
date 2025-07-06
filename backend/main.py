@@ -99,10 +99,11 @@ class AudioStreamHandler:
         self.pre_speech_buffer_size = 3200  # 200ms of audio
         self.pre_speech_buffer = bytearray()
         
-        # Aggressive thresholds for 1.5 second total delay
+        # Aggressive thresholds for fast response
         self.energy_threshold = 400  # Higher threshold to avoid noise triggers
         self.speech_start_frames = 5  # 50ms to start (more robust)
-        self.speech_end_frames = 20   # 200ms of silence for aggressive speculation
+        self.speech_prefetch_frames = 20   # 200ms for prefetch start
+        self.speech_confirm_frames = 80    # 800ms for confirmation
         self.frame_size = 160  # 10ms frames at 8kHz
         
         # Minimum speech duration
@@ -111,6 +112,8 @@ class AudioStreamHandler:
         # Speculative processing
         self.speculative_task = None
         self.is_speculating = False
+        self.speculative_transcript = None
+        self.speech_confirmed = False
         
         # Transcript handling
         self.transcript_queue = asyncio.Queue()
@@ -162,9 +165,13 @@ class AudioStreamHandler:
                     
                     # Cancel any speculative processing if user resumes speaking
                     if self.speculative_task and not self.speculative_task.done():
-                        print(f"{timestamp()} ❌ Cancelling speculative processing - user resumed speaking")
+                        print(f"{timestamp()} ❌ Cancelling prefetch - user resumed speaking")
                         self.speculative_task.cancel()
                         self.is_speculating = False
+                    
+                    # Clear any speculative transcript
+                    self.speculative_transcript = None
+                    self.speech_confirmed = False
                     
                     # Add pre-speech buffer to capture beginning of speech
                     self.speech_buffer.extend(self.pre_speech_buffer)
@@ -186,34 +193,45 @@ class AudioStreamHandler:
                     # Continue adding to buffer during short pauses
                     self.speech_buffer.extend(frame)
                     
-                    # Start speculative processing after 200ms of silence
-                    if self.silence_counter >= self.speech_end_frames:
-                        # Cancel previous speculative task if still running
-                        if self.speculative_task and not self.speculative_task.done():
-                            self.speculative_task.cancel()
-                        
-                        # If we have enough speech, start speculative processing
+                    # Start prefetch after 200ms of silence
+                    if self.silence_counter == self.speech_prefetch_frames:
                         if len(self.speech_buffer) > self.min_speech_duration and not self.is_speculating:
                             self.is_speculating = True
-                            speech_duration = time.time() - self.speech_start_time
                             buffer_size_ms = len(self.speech_buffer) / 16
-                            print(f"{timestamp()} 🔮 Starting speculative processing (200ms silence, {buffer_size_ms:.0f}ms audio)")
+                            print(f"{timestamp()} 🔮 Starting prefetch (200ms silence, {buffer_size_ms:.0f}ms audio)")
                             
-                            # Create speculative task
+                            # Start prefetch task
                             self.speculative_task = asyncio.create_task(
-                                self._speculative_process(bytes(self.speech_buffer), speech_duration)
+                                self._prefetch_process(bytes(self.speech_buffer))
                             )
-                        
-                        # Consider speech ended after 200ms
+                    
+                    # Confirm speech ended after 800ms total silence
+                    if self.silence_counter >= self.speech_confirm_frames:
                         self.is_speaking = False
+                        self.speech_confirmed = True
+                        speech_duration = time.time() - self.speech_start_time
+                        buffer_size_ms = len(self.speech_buffer) / 16
+                        print(f"{timestamp()} ✅ Speech confirmed ended (800ms silence, duration: {speech_duration:.2f}s)")
+                        
+                        # If we have a prefetched transcript, use it
+                        if self.speculative_transcript:
+                            print(f"{timestamp()} 🎯 Using prefetched transcript: '{self.speculative_transcript}'")
+                            await self._commit_transcript(self.speculative_transcript)
+                            self.speculative_transcript = None
+                        elif len(self.speech_buffer) > self.min_speech_duration:
+                            # No prefetch available, process normally
+                            print(f"{timestamp()} 📝 No prefetch available, processing normally")
+                            await self._process_speech_segment(bytes(self.speech_buffer))
+                        
+                        # Clear state
+                        self.speech_buffer.clear()
+                        self.is_speculating = False
+                        self.speech_confirmed = False
+                        
                         await self.websocket.send_json({
                             "type": "speech_end",
                             "timestamp": time.time()
                         })
-                        
-                        # Clear the buffer
-                        self.speech_buffer.clear()
-                        self.is_speculating = False
     
     def _add_to_pre_speech_buffer(self, frame: bytes):
         """Add frame to circular pre-speech buffer"""
@@ -340,39 +358,43 @@ class AudioStreamHandler:
             # Add to queue for processing
             await self.transcript_queue.put(transcript_text)
     
-    async def _speculative_process(self, audio_data: bytes, speech_duration: float):
-        """Speculatively process audio after just 200ms of silence"""
+    async def _prefetch_process(self, audio_data: bytes):
+        """Prefetch transcription after 200ms but don't commit until confirmed"""
         try:
-            spec_start = time.time()
-            print(f"{timestamp()} 🔮 [1/3] Starting speculative transcription")
+            prefetch_start = time.time()
+            print(f"{timestamp()} 🔮 [1/2] Starting prefetch transcription")
             
             # Start transcription immediately
             transcript_text = await self._transcribe_audio(audio_data)
             
             if transcript_text:
-                transcribe_time = time.time() - spec_start
-                print(f"{timestamp()} 🔮 [2/3] Speculative transcript ready: '{transcript_text}' ({transcribe_time:.2f}s)")
+                transcribe_time = time.time() - prefetch_start
+                print(f"{timestamp()} 🔮 [2/2] Prefetch ready: '{transcript_text}' ({transcribe_time:.2f}s)")
                 
-                # Send transcript to frontend
-                await self.websocket.send_json({
-                    "type": "user_transcript",
-                    "text": transcript_text,
-                    "timestamp": time.time()
-                })
-                
-                # Add to queue for processing
-                await self.transcript_queue.put(transcript_text)
-                
-                total_time = time.time() - spec_start
-                print(f"{timestamp()} 🔮 [3/3] Speculative complete in {total_time:.2f}s")
+                # Store the transcript but don't send it yet
+                self.speculative_transcript = transcript_text
             else:
-                print(f"{timestamp()} 🔮 Speculative failed - no valid transcript")
+                print(f"{timestamp()} 🔮 Prefetch failed - no valid transcript")
                 
         except asyncio.CancelledError:
-            print(f"{timestamp()} 🔮 Speculative cancelled - user resumed speaking")
+            print(f"{timestamp()} 🔮 Prefetch cancelled - user resumed speaking")
+            self.speculative_transcript = None
             raise
         except Exception as e:
-            print(f"{timestamp()} ❌ Speculative error: {e}")
+            print(f"{timestamp()} ❌ Prefetch error: {e}")
+            self.speculative_transcript = None
+    
+    async def _commit_transcript(self, transcript_text: str):
+        """Commit a prefetched transcript once speech is confirmed ended"""
+        # Send transcript to frontend
+        await self.websocket.send_json({
+            "type": "user_transcript",
+            "text": transcript_text,
+            "timestamp": time.time()
+        })
+        
+        # Add to queue for processing
+        await self.transcript_queue.put(transcript_text)
     
     def _convert_to_wav(self, audio_data: bytes) -> bytes:
         """Convert raw PCM audio to WAV format"""
@@ -396,11 +418,14 @@ class AudioStreamHandler:
         """Resume processing user speech (after agent response)"""
         print(f"{timestamp()} ▶️  Resuming user speech processing")
         self.is_listening_for_user = True
-        # Clear any buffered audio
+        # Clear any buffered audio and speculative state
         self.speech_buffer.clear()
         self.is_speaking = False
         self.silence_counter = 0
         self.speech_counter = 0
+        self.speculative_transcript = None
+        self.speech_confirmed = False
+        self.is_speculating = False
         
     async def get_transcript(self) -> Optional[str]:
         """Get the next complete transcript"""
@@ -433,7 +458,7 @@ async def generate_gemini_response_stream(user_message: str, conversation: list)
             role = "User" if msg["role"] == "user" else "Assistant"
             prompt += f"{role}: {msg['content']}\n"
         
-        prompt += f"User: {user_message}\nAssistant: "
+        prompt += f"User: {user_message}\nAssistant:"
         
         print(f"{timestamp()} 🤖 LLM: Generating response for '{user_message}'")
         
@@ -449,12 +474,19 @@ async def generate_gemini_response_stream(user_message: str, conversation: list)
                 if first_token_time is None:
                     first_token_time = time.time() - start_time
                     print(f"{timestamp()} ✓ LLM: First token in {first_token_time:.2f}s")
-                
-                buffer += chunk.text
-                char_count += len(chunk.text)
-                
-                # Yield more aggressively for faster response
-                yield chunk.text
+                    
+                    # Clean up any "Assistant:" prefix from first chunk
+                    cleaned_text = chunk.text
+                    if cleaned_text.strip().startswith("Assistant:"):
+                        cleaned_text = cleaned_text.replace("Assistant:", "", 1).lstrip()
+                    
+                    buffer += cleaned_text
+                    char_count += len(cleaned_text)
+                    yield cleaned_text
+                else:
+                    buffer += chunk.text
+                    char_count += len(chunk.text)
+                    yield chunk.text
         
         total_time = time.time() - start_time
         print(f"{timestamp()} ✓ LLM: Complete ({char_count} chars in {total_time:.2f}s)")
@@ -645,8 +677,8 @@ async def websocket_endpoint(websocket: WebSocket):
                                 speech_to_audio_delay = first_audio_time
                                 print(f"{timestamp()} 📊 Timing Breakdown:")
                                 print(f"    • Speech duration: {(response_pipeline_start - audio_handler.speech_start_time):.2f}s")
-                                print(f"    • VAD silence detection: 0.2s (aggressive)")  
-                                print(f"    • Whisper transcription: ~0.6s (speculative)")
+                                print(f"    • VAD prefetch @ 200ms, confirm @ 800ms")  
+                                print(f"    • Whisper: ~0.6s (prefetched)")
                                 print(f"    • LLM first token: {(llm_start - response_pipeline_start):.2f}s")
                                 print(f"    • TTS generation: {(first_audio_time - (llm_start - response_pipeline_start)):.2f}s")
                                 print(f"    • 🎯 Total delay (speech end → audio): {first_audio_time:.2f}s\n")
