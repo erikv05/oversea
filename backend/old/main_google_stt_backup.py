@@ -9,8 +9,7 @@ import tempfile
 from pathlib import Path
 from dotenv import load_dotenv
 import google.generativeai as genai
-from google.cloud import speech
-from google.oauth2 import service_account
+from openai import AsyncOpenAI
 from elevenlabs import generate, save, stream
 import uuid
 import re
@@ -47,15 +46,14 @@ else:
     print("Warning: GEMINI_API_KEY not found in environment variables")
     model = None
 
-# Configure Google Cloud Speech-to-Text
-GOOGLE_CLOUD_CREDENTIALS = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "path/to/your/service-account-key.json")
-if os.path.exists(GOOGLE_CLOUD_CREDENTIALS):
-    credentials = service_account.Credentials.from_service_account_file(GOOGLE_CLOUD_CREDENTIALS)
-    speech_client = speech.SpeechClient(credentials=credentials)
-    print(f"Google Cloud Speech client initialized with credentials from {GOOGLE_CLOUD_CREDENTIALS}")
+# Configure OpenAI Whisper
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+if OPENAI_API_KEY:
+    openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
+    print("OpenAI client initialized for Whisper transcription")
 else:
-    print(f"Warning: Google Cloud credentials file not found at {GOOGLE_CLOUD_CREDENTIALS}")
-    speech_client = None
+    print("Warning: OPENAI_API_KEY not found in environment variables")
+    openai_client = None
 
 # Configure ElevenLabs API
 ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY")
@@ -71,49 +69,49 @@ mcp_client = None
 
 @app.get("/")
 def read_root():
-    return {"message": "Voice Agent API with Google Cloud STT"}
+    return {"message": "Voice Agent API with OpenAI Whisper"}
 
 class AudioStreamHandler:
-    """Handles streaming audio to Google Cloud STT and processing responses"""
+    """Handles streaming audio to OpenAI Whisper and processing responses"""
     
     def __init__(self, websocket: WebSocket, loop: asyncio.AbstractEventLoop):
         self.websocket = websocket
         self.loop = loop
-        self.audio_queue = queue.Queue()
+        self.audio_buffer = bytearray()  # Buffer for accumulating audio
         self.transcript_queue = asyncio.Queue()
         self.is_running = True
         self.current_sentence = ""
-        self.speech_thread = None
+        self.processing_task = None
         self.last_speech_time = time.time()
         self.pending_transcript = ""
         self.silence_threshold = 0.7  # 700ms of silence triggers response
         self.is_listening_for_user = True  # Track if we should process user speech
+        self.last_whisper_time = time.time()
+        self.whisper_interval = 1.0  # Process audio every 1 second
+        self.audio_lock = asyncio.Lock()
         
     async def start(self):
-        """Start the audio processing thread"""
-        self.speech_thread = threading.Thread(target=self._process_audio_stream)
-        self.speech_thread.daemon = True
-        self.speech_thread.start()
+        """Start the audio processing task"""
+        self.processing_task = asyncio.create_task(self._process_audio_stream())
+        # Start silence monitoring task
+        self.silence_task = asyncio.create_task(self._monitor_silence())
         
-        # Start silence detection thread
-        self.silence_thread = threading.Thread(target=self._monitor_silence)
-        self.silence_thread.daemon = True
-        self.silence_thread.start()
-        
-    def stop(self):
+    async def stop(self):
         """Stop audio processing"""
         self.is_running = False
-        self.audio_queue.put(None)  # Signal thread to stop
-        if self.speech_thread:
-            self.speech_thread.join(timeout=1)
+        if self.processing_task:
+            self.processing_task.cancel()
+        if hasattr(self, 'silence_task'):
+            self.silence_task.cancel()
             
-    def add_audio(self, audio_data: bytes):
-        """Add audio data to the processing queue"""
+    async def add_audio(self, audio_data: bytes):
+        """Add audio data to the buffer"""
         if self.is_running:
-            self.audio_queue.put(audio_data)
-            # Log periodically to track audio flow
+            async with self.audio_lock:
+                self.audio_buffer.extend(audio_data)
+            # Log periodically
             if len(audio_data) > 0 and int(time.time()) % 5 == 0 and time.time() % 1 < 0.1:
-                print(f"[Audio] Adding audio - listening: {self.is_listening_for_user}, queue size: {self.audio_queue.qsize()}, bytes: {len(audio_data)}")
+                print(f"[Audio] Adding audio - listening: {self.is_listening_for_user}, buffer size: {len(self.audio_buffer)} bytes")
             
     def pause_listening(self):
         """Pause processing user speech (during agent response)"""
@@ -130,7 +128,7 @@ class AudioStreamHandler:
         self.last_speech_time = time.time()  # Reset silence timer
         # Don't force restart - keep the stream running for instant response
         print(f"[RESUME] Set is_listening_for_user=True")
-        print(f"[RESUME] Current state - is_running: {self.is_running}, speech_thread alive: {self.speech_thread.is_alive() if self.speech_thread else 'None'}")
+        print(f"[RESUME] Current state - is_running: {self.is_running}")
             
     async def get_transcript(self) -> Optional[str]:
         """Get the next complete sentence transcript"""
@@ -139,10 +137,10 @@ class AudioStreamHandler:
         except asyncio.TimeoutError:
             return None
             
-    def _process_audio_stream(self):
-        """Process audio stream in a separate thread (Google STT requirement)"""
-        if not speech_client:
-            print("Speech client not initialized")
+    async def _process_audio_stream(self):
+        """Process audio stream using OpenAI Whisper"""
+        if not openai_client:
+            print("OpenAI client not initialized")
             return
             
         # Configure audio stream recognition
@@ -163,9 +161,6 @@ class AudioStreamHandler:
         
         # Continuously restart recognition to handle streaming limits
         while self.is_running:
-            audio_generator_active = False
-            try:
-                print(f"[STT] Starting new Google STT stream (is_listening: {self.is_listening_for_user})...")
                 
                 # Audio generator that yields chunks from the queue
                 def audio_generator():

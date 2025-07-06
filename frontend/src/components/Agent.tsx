@@ -191,13 +191,10 @@ function Agent() {
           console.log("User transcript received:", data.text);
           setTranscript("");
           
-          // Add to conversation
+          // Don't add to conversation here - wait for stream_start
+          // Just store it as pending
           const userMessage = data.text;
-          setConversation(prev => {
-            const newConv = [...prev, { role: "user", content: userMessage }];
-            conversationRef.current = newConv;
-            return newConv;
-          });
+          pendingResponseRef.current = userMessage;
           
           // Send to backend for processing
           if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
@@ -208,7 +205,6 @@ function Agent() {
                 conversation: conversationRef.current,
               })
             );
-            pendingResponseRef.current = userMessage;
           }
           break;
         }
