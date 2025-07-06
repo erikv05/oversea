@@ -41,6 +41,32 @@ const CreateNewPage: React.FC = () => {
     { id: 'deploy-phone', label: 'Deploy • Phone', completed: false },
   ];
 
+  const getCurrentStepIndex = () => steps.findIndex(step => step.id === currentStep);
+  
+  const goToPreviousStep = () => {
+    const currentIndex = getCurrentStepIndex();
+    if (currentIndex > 0) {
+      setCurrentStep(steps[currentIndex - 1].id);
+    }
+  };
+
+  const goToNextStep = () => {
+    const currentIndex = getCurrentStepIndex();
+    if (currentIndex < steps.length - 1) {
+      setCurrentStep(steps[currentIndex + 1].id);
+    }
+  };
+
+  const getPreviousStepLabel = () => {
+    const currentIndex = getCurrentStepIndex();
+    return currentIndex > 0 ? steps[currentIndex - 1].label : null;
+  };
+
+  const getNextStepLabel = () => {
+    const currentIndex = getCurrentStepIndex();
+    return currentIndex < steps.length - 1 ? steps[currentIndex + 1].label : null;
+  };
+
   const getStepIcon = (stepId: string, isActive: boolean) => {
     const gradientId = `icon-gradient-${stepId}`;
     const fillColor = isActive ? `url(#${gradientId})` : 'currentColor';
@@ -52,8 +78,8 @@ const CreateNewPage: React.FC = () => {
             {isActive && (
               <defs>
                 <linearGradient id={gradientId} x1="0%" y1="0%" x2="100%" y2="0%">
-                  <stop offset="0%" stopColor="#fb7185" />
-                  <stop offset="100%" stopColor="#fb923c" />
+                  <stop offset="0%" stopColor="#60a5fa" />
+                  <stop offset="100%" stopColor="#3b82f6" />
                 </linearGradient>
               </defs>
             )}
@@ -66,8 +92,8 @@ const CreateNewPage: React.FC = () => {
             {isActive && (
               <defs>
                 <linearGradient id={gradientId} x1="0%" y1="0%" x2="100%" y2="0%">
-                  <stop offset="0%" stopColor="#fb7185" />
-                  <stop offset="100%" stopColor="#fb923c" />
+                  <stop offset="0%" stopColor="#60a5fa" />
+                  <stop offset="100%" stopColor="#3b82f6" />
                 </linearGradient>
               </defs>
             )}
@@ -80,8 +106,8 @@ const CreateNewPage: React.FC = () => {
             {isActive && (
               <defs>
                 <linearGradient id={gradientId} x1="0%" y1="0%" x2="100%" y2="0%">
-                  <stop offset="0%" stopColor="#fb7185" />
-                  <stop offset="100%" stopColor="#fb923c" />
+                  <stop offset="0%" stopColor="#60a5fa" />
+                  <stop offset="100%" stopColor="#3b82f6" />
                 </linearGradient>
               </defs>
             )}
@@ -94,8 +120,8 @@ const CreateNewPage: React.FC = () => {
             {isActive && (
               <defs>
                 <linearGradient id={gradientId} x1="0%" y1="0%" x2="100%" y2="0%">
-                  <stop offset="0%" stopColor="#fb7185" />
-                  <stop offset="100%" stopColor="#fb923c" />
+                  <stop offset="0%" stopColor="#60a5fa" />
+                  <stop offset="100%" stopColor="#3b82f6" />
                 </linearGradient>
               </defs>
             )}
@@ -108,8 +134,8 @@ const CreateNewPage: React.FC = () => {
             {isActive && (
               <defs>
                 <linearGradient id={gradientId} x1="0%" y1="0%" x2="100%" y2="0%">
-                  <stop offset="0%" stopColor="#fb7185" />
-                  <stop offset="100%" stopColor="#fb923c" />
+                  <stop offset="0%" stopColor="#60a5fa" />
+                  <stop offset="100%" stopColor="#3b82f6" />
                 </linearGradient>
               </defs>
             )}
@@ -122,56 +148,50 @@ const CreateNewPage: React.FC = () => {
   };
 
   return (
-    <div className="flex h-full bg-black text-white">
-      
-      {/* Left Navigation Panel */}
-      <div className="w-80 bg-black flex flex-col">
-        <div className="flex-1 flex items-center justify-center">
-          <div className="space-y-0.5">
-            {steps.map((step, index) => (
-              <div 
-                key={step.id}
-                className={`flex items-center space-x-3 px-7 py-4 rounded-full cursor-pointer transition-all ${
-                  step.id === currentStep 
-                    ? 'bg-gradient-to-r from-rose-500/20 to-orange-500/20' 
-                    : 'hover:bg-neutral-800/40'
-                }`}
-                onClick={() => setCurrentStep(step.id)}
-              >
-                <div>
-                  {getStepIcon(step.id, true)}
+    <div className="flex h-screen bg-black text-white">
+      {/* Main Content Area */}
+      <div className="flex-1 flex flex-col">
+
+        {/* Navigation Panel */}
+        <div className="bg-black border-b border-neutral-800/30 pt-6">
+          <div className="flex items-center justify-center px-6 py-4">
+            <div className="bg-neutral-900/60 border border-neutral-800/50 rounded-full p-2 flex items-center space-x-1">
+              {steps.map((step, index) => (
+                <div 
+                  key={step.id}
+                  className={`flex items-center space-x-2 px-3 py-2 rounded-full cursor-pointer transition-all ${
+                    step.id === currentStep 
+                      ? 'bg-blue-600/30' 
+                      : 'hover:bg-neutral-800/60 text-neutral-300'
+                  }`}
+                  onClick={() => setCurrentStep(step.id)}
+                >
+                  <div>
+                    {getStepIcon(step.id, true)}
+                  </div>
+                  <span className="text-sm font-medium text-blue-400">{step.label}</span>
+                  {step.completed && step.id === 'overview' && (
+                    <svg className="w-4 h-4" fill="url(#nav-gradient-check)" viewBox="0 0 20 20">
+                      <defs>
+                        <linearGradient id="nav-gradient-check" x1="0%" y1="0%" x2="100%" y2="0%">
+                          <stop offset="0%" stopColor="#60a5fa" />
+                          <stop offset="100%" stopColor="#3b82f6" />
+                        </linearGradient>
+                      </defs>
+                      <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                    </svg>
+                  )}
                 </div>
-                <span className="text-base font-medium bg-gradient-to-r from-rose-400 to-orange-400 text-transparent bg-clip-text">{step.label}</span>
-                {step.completed && step.id === 'overview' && (
-                  <svg className="w-4 h-4 ml-auto" fill="url(#nav-gradient-check)" viewBox="0 0 20 20">
-                    <defs>
-                      <linearGradient id="nav-gradient-check" x1="0%" y1="0%" x2="100%" y2="0%">
-                        <stop offset="0%" stopColor="#fb7185" />
-                        <stop offset="100%" stopColor="#fb923c" />
-                      </linearGradient>
-                    </defs>
-                    <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
-                  </svg>
-                )}
-              </div>
-            ))}
+              ))}
+            </div>
           </div>
         </div>
-      </div>
 
-      {/* Center Content Area */}
-      <div className="flex-1 flex flex-col">
-        {/* Header */}
-        <div className="flex items-center justify-center p-6">
-          <h1 className="text-xl font-medium text-neutral-400">YOUR AGENT</h1>
-          <button className="absolute top-6 right-6 bg-white hover:bg-gray-200 text-black font-medium px-6 py-2 rounded-full transition-colors">
-            Save Agent
-          </button>
-        </div>
-
-        {/* Main content container */}
-        <div className="flex-1 overflow-y-auto p-6 pr-3 relative">
-          <div className="max-w-lg ml-auto mr-6 relative">
+        {/* Content and Preview Container */}
+        <div className="flex-1 flex overflow-hidden">
+          {/* Main content container */}
+          <div className="flex-1 overflow-y-auto p-6 pr-3 relative pb-24">
+            <div className="max-w-lg ml-auto mr-6 relative">
             {/* Form Container */}
             {currentStep === 'overview' ? (
             <div className="bg-neutral-900/80 rounded-2xl p-6 space-y-5 border border-neutral-800/30">
@@ -568,51 +588,69 @@ const CreateNewPage: React.FC = () => {
               </div>
             ) : null}
 
-            {/* Navigation Buttons - positioned relative to form */}
-            <div className="flex items-center justify-center space-x-4 mt-8">
-                <button className="bg-neutral-800/90 hover:bg-neutral-700 text-neutral-300 hover:text-white font-medium px-8 py-4 rounded-full transition-colors flex items-center space-x-3 backdrop-blur-sm">
-                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 19l-7-7 7-7" />
-                  </svg>
-                  <span>Back</span>
-                </button>
+            </div>
+          </div>
+
+          {/* Right Agent Preview Panel */}
+          <div className="w-96 bg-black flex flex-col p-6">
+            <div className="flex-1 flex flex-col items-center justify-center">
+              {/* Preview Container */}
+              <div className="bg-neutral-900/80 rounded-2xl p-12 flex flex-col items-center w-full h-[500px] border border-neutral-800/30">
+                <div className="mb-8">
+                  <h2 className="text-sm font-medium text-neutral-400 text-center">AGENT PREVIEW</h2>
+                </div>
                 
-                <button className="bg-white hover:bg-gray-200 text-black font-medium px-10 py-4 rounded-full transition-colors flex items-center space-x-3">
-                  <span className="text-lg">Next</span>
-                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 5l7 7-7 7" />
+                {/* Microphone Button */}
+                <div className="w-20 h-20 rounded-full bg-black border-2 border-white flex items-center justify-center mb-12 hover:bg-neutral-900 transition-colors cursor-pointer">
+                  <svg className="w-8 h-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
                   </svg>
-                  <div className="ml-1">
-                    <div className="text-xs opacity-75 uppercase tracking-wide">PERSONALITY & TONE</div>
-                  </div>
-                </button>
+                </div>
+                
+                {/* Conversation ID */}
+                <div className="text-center">
+                  <div className="text-sm font-medium text-neutral-300 mb-2">Conversation ID</div>
+                  <div className="text-xs text-neutral-500 font-mono">KDyKbfjklGAJEwaKDnyZ</div>
+                </div>
+              </div>
             </div>
           </div>
         </div>
+
       </div>
 
-      {/* Right Agent Preview Panel */}
-      <div className="w-96 bg-black flex flex-col p-6">
-        <div className="flex-1 flex flex-col items-center justify-center">
-          {/* Preview Container */}
-          <div className="bg-neutral-900/80 rounded-2xl p-12 flex flex-col items-center w-full h-[500px] border border-neutral-800/30">
-            <div className="mb-8">
-              <h2 className="text-sm font-medium text-neutral-400 text-center">AGENT PREVIEW</h2>
-            </div>
-            
-            {/* Microphone Button */}
-            <div className="w-20 h-20 rounded-full bg-black border-2 border-white flex items-center justify-center mb-12 hover:bg-neutral-900 transition-colors cursor-pointer">
-              <svg className="w-8 h-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
+      {/* Fixed Navigation Buttons - Always visible at bottom of main content area */}
+      <div className="fixed bottom-0 left-0 right-0 bg-black border-t border-neutral-800/30 p-4 z-50">
+        <div className="flex items-center justify-end space-x-4 pr-6">
+          {getPreviousStepLabel() && (
+            <button 
+              onClick={goToPreviousStep}
+              className="bg-neutral-900/80 hover:bg-neutral-800/90 border border-neutral-700/50 hover:border-neutral-600 text-neutral-300 hover:text-white font-medium px-4 py-2 rounded-full transition-all duration-200 flex items-center space-x-2 w-40"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
               </svg>
-            </div>
-            
-            {/* Conversation ID */}
-            <div className="text-center">
-              <div className="text-sm font-medium text-neutral-300 mb-2">Conversation ID</div>
-              <div className="text-xs text-neutral-500 font-mono">KDyKbfjklGAJEwaKDnyZ</div>
-            </div>
-          </div>
+              <div className="flex-1 text-left">
+                <div className="text-sm font-medium leading-tight">Back</div>
+                <div className="text-xs text-neutral-500 truncate leading-tight">{getPreviousStepLabel()}</div>
+              </div>
+            </button>
+          )}
+          
+          {getNextStepLabel() && (
+            <button 
+              onClick={goToNextStep}
+              className="bg-blue-600 hover:bg-blue-500 text-white font-medium px-4 py-2 rounded-full transition-all duration-200 flex items-center space-x-2 shadow-lg hover:shadow-xl w-40"
+            >
+              <div className="flex-1 text-left">
+                <div className="text-sm font-medium leading-tight">Next</div>
+                <div className="text-xs text-blue-200 truncate leading-tight">{getNextStepLabel()}</div>
+              </div>
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+              </svg>
+            </button>
+          )}
         </div>
       </div>
     </div>
