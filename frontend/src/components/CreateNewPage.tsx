@@ -14,12 +14,6 @@ const CreateNewPage: React.FC = () => {
   const models = ['Play 2.0 (Most Stable)', 'Play 3.0 (Beta)', 'GPT-4'];
   const privacyOptions = ['Public', 'Private', 'Unlisted'];
 
-  const avatarColors = [
-    'bg-orange-500',
-    'bg-pink-500', 
-    'bg-purple-500',
-    'bg-blue-500'
-  ];
 
   const steps = [
     { id: 'identity', label: 'Identity', completed: true },
@@ -42,9 +36,9 @@ const CreateNewPage: React.FC = () => {
                 key={step.id}
                 className={`flex items-center space-x-3 px-6 py-3 rounded-full cursor-pointer transition-all ${
                   step.id === currentStep 
-                    ? 'bg-green-600 text-black' 
+                    ? 'bg-white text-black' 
                     : step.completed 
-                      ? 'text-green-400 hover:bg-green-600/10'
+                      ? 'text-white hover:bg-white/10'
                       : 'text-neutral-500 hover:text-neutral-300 hover:bg-neutral-800/50'
                 }`}
                 onClick={() => setCurrentStep(step.id)}
@@ -53,7 +47,7 @@ const CreateNewPage: React.FC = () => {
                   step.id === currentStep 
                     ? 'bg-black text-white' 
                     : step.completed 
-                      ? 'bg-green-600 text-white'
+                      ? 'bg-white text-black'
                       : 'bg-neutral-700 text-neutral-400'
                 }`}>
                   {step.completed ? (
@@ -76,7 +70,7 @@ const CreateNewPage: React.FC = () => {
         {/* Header */}
         <div className="flex items-center justify-center p-6">
           <h1 className="text-xl font-medium text-neutral-400">YOUR AGENT</h1>
-          <button className="absolute top-6 right-6 bg-green-500 hover:bg-green-600 text-black font-medium px-6 py-2 rounded-full transition-colors">
+          <button className="absolute top-6 right-6 bg-white hover:bg-gray-200 text-black font-medium px-6 py-2 rounded-full transition-colors">
             Save Agent
           </button>
         </div>
@@ -85,7 +79,7 @@ const CreateNewPage: React.FC = () => {
         <div className="flex-1 overflow-y-auto p-6 pr-3 relative">
           <div className="max-w-lg ml-auto mr-6 relative">
             {/* Form Container */}
-            <div className="bg-neutral-800/60 rounded-3xl p-8 space-y-6">
+            <div className="bg-neutral-900/80 rounded-2xl p-8 space-y-6 border border-neutral-700/50">
           
           {/* Name Section */}
           <div className="space-y-3">
@@ -101,7 +95,7 @@ const CreateNewPage: React.FC = () => {
               type="text"
               value={agentName}
               onChange={(e) => setAgentName(e.target.value)}
-              className="w-full bg-neutral-800/80 border border-neutral-600 rounded-2xl px-6 py-3 text-white placeholder-neutral-400 focus:outline-none focus:border-neutral-500 transition-colors"
+              className="w-full bg-black/50 border border-neutral-700 rounded-2xl px-5 py-2.5 text-white placeholder-neutral-400 focus:outline-none focus:border-white/30 transition-colors"
               placeholder="Enter agent name"
             />
           </div>
@@ -128,26 +122,26 @@ const CreateNewPage: React.FC = () => {
                 <select
                   value={selectedVoice}
                   onChange={(e) => setSelectedVoice(e.target.value)}
-                  className="w-full bg-neutral-800/80 border border-neutral-600 rounded-2xl px-6 py-3 text-white appearance-none focus:outline-none focus:border-neutral-500 cursor-pointer transition-colors"
+                  className="w-full bg-black/50 border border-neutral-700 rounded-2xl px-5 py-2.5 text-white appearance-none focus:outline-none focus:border-white/30 cursor-pointer transition-colors"
                 >
                   {voices.map(voice => (
                     <option key={voice} value={voice}>{voice}</option>
                   ))}
                 </select>
-                <ChevronDownIcon className="absolute right-4 top-1/2 transform -translate-y-1/2 w-5 h-5 text-green-400 pointer-events-none" />
+                <ChevronDownIcon className="absolute right-4 top-1/2 transform -translate-y-1/2 w-5 h-5 text-white pointer-events-none" />
               </div>
               
               <div className="w-28 relative">
                 <select
                   value={selectedSpeed}
                   onChange={(e) => setSelectedSpeed(e.target.value)}
-                  className="w-full bg-neutral-800/80 border border-neutral-600 rounded-2xl px-6 py-3 text-white appearance-none focus:outline-none focus:border-neutral-500 cursor-pointer transition-colors"
+                  className="w-full bg-black/50 border border-neutral-700 rounded-2xl px-5 py-2.5 text-white appearance-none focus:outline-none focus:border-white/30 cursor-pointer transition-colors"
                 >
                   {speeds.map(speed => (
                     <option key={speed} value={speed}>{speed}</option>
                   ))}
                 </select>
-                <ChevronDownIcon className="absolute right-4 top-1/2 transform -translate-y-1/2 w-5 h-5 text-green-400 pointer-events-none" />
+                <ChevronDownIcon className="absolute right-4 top-1/2 transform -translate-y-1/2 w-5 h-5 text-white pointer-events-none" />
               </div>
             </div>
           </div>
@@ -161,7 +155,7 @@ const CreateNewPage: React.FC = () => {
               <select
                 value={selectedModel}
                 onChange={(e) => setSelectedModel(e.target.value)}
-                className="w-full bg-neutral-800/80 border border-neutral-600 rounded-2xl px-6 py-3 text-white appearance-none focus:outline-none focus:border-neutral-500 cursor-pointer transition-colors"
+                className="w-full bg-black/50 border border-neutral-700 rounded-2xl px-5 py-2.5 text-white appearance-none focus:outline-none focus:border-white/30 cursor-pointer transition-colors"
               >
                 {models.map(model => (
                   <option key={model} value={model}>{model}</option>
@@ -180,25 +174,13 @@ const CreateNewPage: React.FC = () => {
               <span className="text-sm font-medium text-neutral-400">AVATAR</span>
             </div>
             
-            <div className="border-2 border-dashed border-neutral-600 rounded-2xl p-12 text-center hover:border-neutral-500 transition-colors cursor-pointer bg-neutral-800/20">
-              <svg className="w-8 h-8 text-green-400 mx-auto mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <div className="border-2 border-dashed border-neutral-700 rounded-2xl p-3 text-center hover:border-white/30 transition-colors cursor-pointer bg-black/30 flex items-center justify-center space-x-3">
+              <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
               </svg>
-              <span className="text-green-400 text-sm font-medium">Upload Image</span>
+              <span className="text-white text-sm font-medium">Upload Image</span>
             </div>
 
-            <div className="flex space-x-3 mt-4">
-              {avatarColors.map((color, index) => (
-                <div
-                  key={index}
-                  className={`w-20 h-20 ${color} rounded-2xl flex items-center justify-center cursor-pointer hover:opacity-80 transition-opacity border border-neutral-600`}
-                >
-                  <svg className="w-8 h-8 text-white" fill="currentColor" viewBox="0 0 24 24">
-                    <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/>
-                  </svg>
-                </div>
-              ))}
-            </div>
           </div>
 
           {/* Privacy Section */}
@@ -213,14 +195,14 @@ const CreateNewPage: React.FC = () => {
               <select
                 value={selectedPrivacy}
                 onChange={(e) => setSelectedPrivacy(e.target.value)}
-                className="w-full bg-neutral-800/80 border border-neutral-600 rounded-2xl px-6 py-3 text-white appearance-none focus:outline-none focus:border-neutral-500 cursor-pointer transition-colors"
+                className="w-full bg-black/50 border border-neutral-700 rounded-2xl px-5 py-2.5 text-white appearance-none focus:outline-none focus:border-white/30 cursor-pointer transition-colors"
               >
                 {privacyOptions.map(option => (
                   <option key={option} value={option}>{option}</option>
                 ))}
               </select>
               <div className="absolute right-12 top-1/2 transform -translate-y-1/2">
-                <div className="w-2 h-2 bg-green-500 rounded-full"></div>
+                <div className="w-2 h-2 bg-white rounded-full"></div>
               </div>
               <ChevronDownIcon className="absolute right-4 top-1/2 transform -translate-y-1/2 w-5 h-5 text-green-400 pointer-events-none" />
             </div>
@@ -237,7 +219,7 @@ const CreateNewPage: React.FC = () => {
                   <span>Back</span>
                 </button>
                 
-                <button className="bg-green-500 hover:bg-green-600 text-black font-medium px-10 py-4 rounded-full transition-colors flex items-center space-x-3">
+                <button className="bg-white hover:bg-gray-200 text-black font-medium px-10 py-4 rounded-full transition-colors flex items-center space-x-3">
                   <span className="text-lg">Next</span>
                   <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 5l7 7-7 7" />
@@ -255,7 +237,7 @@ const CreateNewPage: React.FC = () => {
       <div className="w-96 bg-black flex flex-col p-6">
         <div className="flex-1 flex flex-col items-center justify-center">
           {/* Preview Container */}
-          <div className="bg-neutral-800/60 rounded-3xl p-12 flex flex-col items-center w-full h-[500px]">
+          <div className="bg-neutral-900/80 rounded-2xl p-12 flex flex-col items-center w-full h-[500px] border border-neutral-700/50">
             <div className="mb-8">
               <h2 className="text-sm font-medium text-neutral-400 text-center">AGENT PREVIEW</h2>
             </div>
