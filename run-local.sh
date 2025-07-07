@@ -5,13 +5,14 @@ echo "Starting local development environment..."
 # Kill any existing processes
 echo "Stopping any existing processes..."
 pkill -f "python.*minimal_with_storage.py" 2>/dev/null
+pkill -f "python.*minimal_with_ws.py" 2>/dev/null
 pkill -f "npm run dev" 2>/dev/null
 
 # Start backend
 echo ""
 echo "Starting backend server on http://localhost:8000..."
 cd backend
-python3 minimal_with_storage.py &
+python3 minimal_with_ws.py &
 BACKEND_PID=$!
 cd ..
 
@@ -41,6 +42,7 @@ cleanup() {
     kill $BACKEND_PID 2>/dev/null
     kill $FRONTEND_PID 2>/dev/null
     pkill -f "python.*minimal_with_storage.py" 2>/dev/null
+    pkill -f "python.*minimal_with_ws.py" 2>/dev/null
     pkill -f "npm run dev" 2>/dev/null
     echo "Services stopped."
     exit 0

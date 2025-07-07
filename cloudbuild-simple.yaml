@@ -23,11 +23,12 @@ steps:
       - '--min-instances=0'
       - '--max-instances=10'
       - '--set-env-vars=CORS_ORIGINS=*'
+      - '--set-env-vars=CLOUD_RUN=1'
       - '--set-env-vars=GEMINI_API_KEY=${_GEMINI_API_KEY}'
       - '--set-env-vars=DEEPGRAM_API_KEY=${_DEEPGRAM_API_KEY}'
       - '--set-env-vars=ELEVENLABS_API_KEY=${_ELEVENLABS_API_KEY}'
       - '--set-env-vars=ELEVENLABS_VOICE_ID=${_ELEVENLABS_VOICE_ID}'
       - '--set-env-vars=ELEVENLABS_MODEL=eleven_turbo_v2'
-      - '--set-env-vars=GEMINI_MODEL=gemini-1.5-flash'
+      - '--set-env-vars=GEMINI_MODEL=gemini-2.0-flash-exp'
 
 timeout: 1200s

@@ -1,12 +1,34 @@
-from http.server import HTTPServer, BaseHTTPRequestHandler
+import asyncio
+import websockets
 import json
-import uuid
+import http.server
+import threading
 from datetime import datetime
+import uuid
 
-# In-memory storage
+# In-memory storage (shared with HTTP server)
 agents = {}
 
-class Handler(BaseHTTPRequestHandler):
+# WebSocket handler
+async def websocket_handler(websocket, path):
+    print(f"WebSocket connection opened: {path}")
+    try:
+        async for message in websocket:
+            print(f"Received WebSocket message: {message}")
+            # Echo back a simple response
+            response = {
+                "type": "connected",
+                "message": "WebSocket connection established",
+                "timestamp": datetime.now().isoformat()
+            }
+            await websocket.send(json.dumps(response))
+    except websockets.exceptions.ConnectionClosed:
+        print("WebSocket connection closed")
+    except Exception as e:
+        print(f"WebSocket error: {e}")
+
+# HTTP Handler
+class HTTPHandler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == '/api/health':
             self.send_json(200, {"status": "healthy"})
@@ -14,7 +36,6 @@ class Handler(BaseHTTPRequestHandler):
             agent_list = list(agents.values())
             self.send_json(200, agent_list)
         elif self.path.startswith('/api/agents/') and len(self.path.split('/')) == 4:
-            # Get single agent by ID
             agent_id = self.path.split('/')[-1]
             if agent_id in agents:
                 self.send_json(200, agents[agent_id])
@@ -77,13 +98,35 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header('Access-Control-Allow-Origin', '*')
         self.end_headers()
         self.wfile.write(json.dumps(data).encode())
+    
+    def log_message(self, format, *args):
+        # Suppress HTTP logs
+        pass
+
+# Run HTTP server in a thread
+def run_http_server():
+    server = http.server.HTTPServer(('0.0.0.0', 8000), HTTPHandler)
+    print('HTTP server running on http://localhost:8000')
+    server.serve_forever()
+
+# Main function
+async def main():
+    # Start HTTP server in background thread
+    http_thread = threading.Thread(target=run_http_server, daemon=True)
+    http_thread.start()
+    
+    # Start WebSocket server
+    print('WebSocket server running on ws://localhost:8000')
+    async with websockets.serve(websocket_handler, '0.0.0.0', 8001):
+        await asyncio.Future()  # Run forever
 
 if __name__ == '__main__':
-    server = HTTPServer(('0.0.0.0', 8000), Handler)
-    print('Backend server running on http://localhost:8000')
+    print('Starting Voice Agent Backend with WebSocket support...')
     print('API endpoints:')
     print('  GET  /api/health')
     print('  GET  /api/agents/')
     print('  GET  /api/agents/:id')
     print('  POST /api/agents/')
-    server.serve_forever()
+    print('  WS   ws://localhost:8001')
+    
+    asyncio.run(main())

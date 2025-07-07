@@ -6,18 +6,24 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # API Keys
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY", "")
 ELEVENLABS_VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM")  # Default Rachel voice
 WHISPER_MODEL = os.getenv("WHISPER_MODEL", "whisper-1")  # Default to stable model
-DEEPGRAM_API_KEY = os.getenv("DEEPGRAM_API_KEY")
+DEEPGRAM_API_KEY = os.getenv("DEEPGRAM_API_KEY", "")
 
 # MCP Configuration
 MCP_URL = "https://mcp.zapier.com/api/mcp/s/YjFmMGM0NjItMmYwOC00Y2M3LWEyY2EtN2JjNmY3ODU5Njg3OmMyNzViMDI4LWNmYTctNDIxZi04ZDAxLTU2ODQ3ODczNTgzMQ=="
 
 # Directory Configuration
-AUDIO_DIR = Path("/app/backend/temp_audio")
+import os
+if os.environ.get('CLOUD_RUN', False):
+    # Production path for Cloud Run
+    AUDIO_DIR = Path("/app/backend/temp_audio")
+else:
+    # Local development path
+    AUDIO_DIR = Path(__file__).parent.parent / "temp_audio"
 AUDIO_DIR.mkdir(exist_ok=True, parents=True)
 
 # Server Configuration
