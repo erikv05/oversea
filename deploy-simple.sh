@@ -1,35 +1,47 @@
 #!/bin/bash
+# Minimal deployment using Cloud Build
 
-# Simplest deployment using Cloud Build
 set -e
 
-# Check if API keys are set
-if [ -z "$GEMINI_API_KEY" ] || [ -z "$DEEPGRAM_API_KEY" ] || [ -z "$ELEVENLABS_API_KEY" ] || [ -z "$ELEVENLABS_VOICE_ID" ]; then
-    echo "Error: Please set all required environment variables:"
-    echo "  export GEMINI_API_KEY='your-key'"
-    echo "  export DEEPGRAM_API_KEY='your-key'"
-    echo "  export ELEVENLABS_API_KEY='your-key'"
-    echo "  export ELEVENLABS_VOICE_ID='your-voice-id'"
+# Get the project ID
+PROJECT_ID=$(gcloud config get-value project)
+if [ -z "$PROJECT_ID" ]; then
+    echo "Error: No Google Cloud project set. Run: gcloud config set project YOUR_PROJECT_ID"
     exit 1
 fi
 
-echo "Deploying Voice Agent using Cloud Build..."
+echo "Building and deploying minimal version to project: $PROJECT_ID"
 
-# Submit build and deploy
-gcloud builds submit \
-  --config=cloudbuild-simple.yaml \
-  --substitutions=_GEMINI_API_KEY="$GEMINI_API_KEY",_DEEPGRAM_API_KEY="$DEEPGRAM_API_KEY",_ELEVENLABS_API_KEY="$ELEVENLABS_API_KEY",_ELEVENLABS_VOICE_ID="$ELEVENLABS_VOICE_ID"
+# Create a temporary Cloud Build config
+cat > cloudbuild-temp.yaml <<EOF
+steps:
+  # Build the image
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['build', '-f', 'Dockerfile.cloudrun', '-t', 'gcr.io/$PROJECT_ID/voice-agent', '.']
+  
+  # Push the image
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'gcr.io/$PROJECT_ID/voice-agent']
+  
+  # Deploy to Cloud Run
+  - name: 'gcr.io/cloud-builders/gcloud'
+    args:
+      - 'run'
+      - 'deploy'
+      - 'voice-agent'
+      - '--image=gcr.io/$PROJECT_ID/voice-agent'
+      - '--platform=managed'
+      - '--region=us-central1'
+      - '--allow-unauthenticated'
+      - '--port=8080'
+      - '--memory=1Gi'
+EOF
 
-# Get the service URL
-echo ""
-echo "Getting service URL..."
-SERVICE_URL=$(gcloud run services describe voice-agent --region us-central1 --format 'value(status.url)')
+# Submit the build
+gcloud builds submit --config=cloudbuild-temp.yaml .
 
-echo ""
-echo "✅ Deployment complete!"
-echo "🌐 Service URL: $SERVICE_URL"
-echo ""
-echo "To add custom domain:"
-echo "1. Go to Cloud Console → Cloud Run → voice-agent"
-echo "2. Click 'Manage Custom Domains'"
-echo "3. Add voice.addojo.ai"
+# Clean up
+rm cloudbuild-temp.yaml
+
+echo "Done! Test with:"
+echo "curl $(gcloud run services describe voice-agent --region us-central1 --format 'value(status.url)')/api/health"

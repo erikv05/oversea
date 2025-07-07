@@ -6,45 +6,31 @@ RUN npm ci
 COPY frontend/ ./
 RUN npm run build
 
-# Final image
+# Main image
 FROM python:3.12-slim
 
 # Install nginx and supervisor
-RUN apt-get update && apt-get install -y \
-    nginx \
-    supervisor \
-    gcc \
-    g++ \
-    && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y nginx supervisor && rm -rf /var/lib/apt/lists/*
 
-# Set working directory
+# Copy backend
 WORKDIR /app
+COPY backend/minimal_with_storage.py /app/backend/minimal_with_storage.py
 
-# Copy backend requirements and install
-COPY backend/requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
-# Copy backend code
-COPY backend/ ./backend/
-
-# Copy frontend build
+# Copy frontend build from builder stage
 COPY --from=frontend-builder /app/dist /usr/share/nginx/html
 
-# Copy nginx configuration
+# Copy configs
 COPY cloudrun/nginx.conf /etc/nginx/sites-available/default
-
-# Copy supervisor configuration
 COPY cloudrun/supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 
-# Copy startup script
-COPY cloudrun/start.sh /app/start.sh
-RUN chmod +x /app/start.sh
-
-# Create directories
-RUN mkdir -p /app/backend/audio_files
-
-# Expose port (Cloud Run uses PORT env variable)
+# Expose port
 EXPOSE 8080
 
-# Start with our script
-CMD ["/app/start.sh"]
+# Create a simple start script
+RUN echo '#!/bin/bash\n\
+PORT=${PORT:-8080}\n\
+sed -i "s/listen 8080/listen $PORT/g" /etc/nginx/sites-available/default\n\
+/usr/bin/supervisord -c /etc/supervisor/conf.d/supervisord.conf' > /start.sh && chmod +x /start.sh
+
+# Start with script to handle PORT variable
+CMD ["/start.sh"]

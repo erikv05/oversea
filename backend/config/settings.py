@@ -17,11 +17,12 @@ DEEPGRAM_API_KEY = os.getenv("DEEPGRAM_API_KEY")
 MCP_URL = "https://mcp.zapier.com/api/mcp/s/YjFmMGM0NjItMmYwOC00Y2M3LWEyY2EtN2JjNmY3ODU5Njg3OmMyNzViMDI4LWNmYTctNDIxZi04ZDAxLTU2ODQ3ODczNTgzMQ=="
 
 # Directory Configuration
-AUDIO_DIR = Path("temp_audio")
-AUDIO_DIR.mkdir(exist_ok=True)
+AUDIO_DIR = Path("/app/backend/temp_audio")
+AUDIO_DIR.mkdir(exist_ok=True, parents=True)
 
 # Server Configuration
-CORS_ORIGINS = ["http://localhost:5173"]  # Vite default port
+CORS_ORIGINS = os.getenv("CORS_ORIGINS", "http://localhost:5173").split(",")
+# In production, this will be set to the Cloud Run service URL
 
 # Voice Activity Detection Parameters
 VAD_CONFIG = {
