@@ -1,7 +1,6 @@
-import React, { useState } from "react";
+import React from "react";
 import {
   ChevronRightIcon,
-  ChevronDownIcon,
   PlusIcon,
 } from "@heroicons/react/24/outline";
 
@@ -10,15 +9,6 @@ interface SidebarProps {
 }
 
 const Sidebar: React.FC<SidebarProps> = ({ onNavigate }) => {
-  const [expandedItems, setExpandedItems] = useState<{
-    [key: string]: boolean;
-  }>({
-    agents: true,
-  });
-
-  const toggleExpanded = (key: string) => {
-    setExpandedItems((prev) => ({ ...prev, [key]: !prev[key] }));
-  };
 
   return (
     <div className="w-64 h-screen bg-black text-gray-300 flex flex-col border-r border-neutral-800">
@@ -29,111 +19,17 @@ const Sidebar: React.FC<SidebarProps> = ({ onNavigate }) => {
 
       {/* Main menu */}
       <div className="flex-1 overflow-y-auto py-2">
-        <div className="px-1">
-          {/* Agents */}
+        <div className="px-1 space-y-0.5">
+          {/* Create New */}
           <div
             className="flex items-center px-2 py-1.5 rounded-md hover:bg-neutral-800 cursor-pointer transition-colors"
-            onClick={() => toggleExpanded("agents")}
+            onClick={() => onNavigate("create-new")}
           >
-            <svg
-              className="w-5 h-5 mr-2"
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={1.5}
-                d="M9 3v2m6-2v2M9 19v2m6-2v2M5 9H3m2 6H3m18-6h-2m2 6h-2M7 19h10a2 2 0 002-2V7a2 2 0 00-2-2H7a2 2 0 00-2 2v10a2 2 0 002 2zM9 9h6v6H9V9z"
-              />
-            </svg>
-            <span className="text-sm font-normal flex-1">Agents</span>
-            {expandedItems.agents ? (
-              <ChevronDownIcon className="w-4 h-4 text-gray-500" />
-            ) : (
-              <ChevronRightIcon className="w-4 h-4 text-gray-500" />
-            )}
+            <PlusIcon className="w-5 h-5 mr-2" />
+            <span className="text-sm font-normal">Create New</span>
           </div>
 
-          {/* Agents submenu */}
-          {expandedItems.agents && (
-            <div className="ml-8 mt-0.5">
-              <div
-                className="flex items-center px-2 py-1.5 rounded-md hover:bg-neutral-800 cursor-pointer transition-colors"
-                onClick={() => onNavigate("create-new")}
-              >
-                <PlusIcon className="w-4 h-4 mr-2" />
-                <span className="text-sm font-normal">Create New</span>
-              </div>
-              <div className="flex items-center px-3 py-1.5 rounded-md hover:bg-neutral-800 cursor-pointer transition-colors">
-                <svg
-                  className="w-4 h-4 mr-2"
-                  fill="none"
-                  stroke="currentColor"
-                  viewBox="0 0 24 24"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={1.5}
-                    d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"
-                  />
-                </svg>
-                <span className="text-sm font-normal">My Agents</span>
-              </div>
-              <div className="flex items-center px-3 py-1.5 rounded-md hover:bg-neutral-800 cursor-pointer transition-colors">
-                <svg
-                  className="w-4 h-4 mr-2"
-                  fill="none"
-                  stroke="currentColor"
-                  viewBox="0 0 24 24"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={1.5}
-                    d="M13 10V3L4 14h7v7l9-11h-7z"
-                  />
-                </svg>
-                <span className="text-sm font-normal">Actions</span>
-              </div>
-              <div className="flex items-center px-3 py-1.5 rounded-md hover:bg-neutral-800 cursor-pointer transition-colors">
-                <svg
-                  className="w-4 h-4 mr-2"
-                  fill="none"
-                  stroke="currentColor"
-                  viewBox="0 0 24 24"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={1.5}
-                    d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"
-                  />
-                </svg>
-                <span className="text-sm font-normal">Conversations</span>
-              </div>
-              <div className="flex items-center px-3 py-1.5 rounded-md hover:bg-neutral-800 cursor-pointer transition-colors">
-                <svg
-                  className="w-4 h-4 mr-2"
-                  fill="none"
-                  stroke="currentColor"
-                  viewBox="0 0 24 24"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={1.5}
-                    d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
-                  />
-                </svg>
-                <span className="text-sm font-normal">Templates</span>
-              </div>
-            </div>
-          )}
-
-          {/* Playground */}
+          {/* My Agents */}
           <div className="flex items-center px-2 py-1.5 rounded-md hover:bg-neutral-800 cursor-pointer transition-colors">
             <svg
               className="w-5 h-5 mr-2"
@@ -145,16 +41,64 @@ const Sidebar: React.FC<SidebarProps> = ({ onNavigate }) => {
                 strokeLinecap="round"
                 strokeLinejoin="round"
                 strokeWidth={1.5}
-                d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"
+                d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"
               />
+            </svg>
+            <span className="text-sm font-normal">My Agents</span>
+          </div>
+
+          {/* Actions */}
+          <div className="flex items-center px-2 py-1.5 rounded-md hover:bg-neutral-800 cursor-pointer transition-colors">
+            <svg
+              className="w-5 h-5 mr-2"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
               <path
                 strokeLinecap="round"
                 strokeLinejoin="round"
                 strokeWidth={1.5}
-                d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
+                d="M13 10V3L4 14h7v7l9-11h-7z"
               />
             </svg>
-            <span className="text-sm font-normal">Playground</span>
+            <span className="text-sm font-normal">Actions</span>
+          </div>
+
+          {/* Conversations */}
+          <div className="flex items-center px-2 py-1.5 rounded-md hover:bg-neutral-800 cursor-pointer transition-colors">
+            <svg
+              className="w-5 h-5 mr-2"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={1.5}
+                d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"
+              />
+            </svg>
+            <span className="text-sm font-normal">Conversations</span>
+          </div>
+
+          {/* Templates */}
+          <div className="flex items-center px-2 py-1.5 rounded-md hover:bg-neutral-800 cursor-pointer transition-colors">
+            <svg
+              className="w-5 h-5 mr-2"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={1.5}
+                d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
+              />
+            </svg>
+            <span className="text-sm font-normal">Templates</span>
           </div>
         </div>
       </div>

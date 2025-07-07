@@ -17,7 +17,6 @@ const CreateNewPage: React.FC = () => {
   const [currentDateEnabled, setCurrentDateEnabled] = useState(true);
   const [callerInfoEnabled, setCallerInfoEnabled] = useState(true);
   const [selectedTimezone, setSelectedTimezone] = useState('(GMT-08:00) Pacific Time (US & Canada)');
-  const [behaviorInstructionsCollapsed, setBehaviorInstructionsCollapsed] = useState(true);
 
   const voices = ['Vincent', 'Alice', 'Bob', 'Emma'];
   const speeds = ['0.5x', '0.75x', '1.0x', '1.25x', '1.5x', '2.0x'];
@@ -35,8 +34,8 @@ const CreateNewPage: React.FC = () => {
 
   const steps = [
     { id: 'overview', label: 'Overview', completed: true },
-    { id: 'personality', label: 'Personality & Tone', completed: false },
-    { id: 'knowledge', label: 'Knowledge & Memory', completed: false },
+    { id: 'personality', label: 'Personality', completed: false },
+    { id: 'knowledge', label: 'Knowledge', completed: false },
     { id: 'actions', label: 'Actions', completed: false },
     { id: 'deploy-phone', label: 'Deploy • Phone', completed: false },
   ];
@@ -155,7 +154,7 @@ const CreateNewPage: React.FC = () => {
         {/* Navigation Panel */}
         <div className="bg-black border-b border-neutral-800/30 pt-6">
           <div className="flex items-center justify-center px-6 py-4">
-            <div className="bg-neutral-900/60 border border-neutral-800/50 rounded-full p-2 flex items-center space-x-1">
+            <div className="bg-blue-950/30 border border-blue-900/30 rounded-full p-2 flex items-center space-x-1">
               {steps.map((step, index) => (
                 <div 
                   key={step.id}
@@ -187,11 +186,11 @@ const CreateNewPage: React.FC = () => {
           </div>
         </div>
 
-        {/* Content and Preview Container */}
+        {/* Content Container */}
         <div className="flex-1 flex overflow-hidden">
           {/* Main content container */}
-          <div className="flex-1 overflow-y-auto p-6 pr-3 relative pb-24">
-            <div className="max-w-lg ml-auto mr-6 relative">
+          <div className="flex-1 overflow-y-auto p-6 relative pb-24">
+            <div className="max-w-lg mx-auto relative">
             {/* Form Container */}
             {currentStep === 'overview' ? (
             <div className="bg-neutral-900/80 rounded-2xl p-6 space-y-5 border border-neutral-800/30">
@@ -262,6 +261,25 @@ const CreateNewPage: React.FC = () => {
           </div>
 
 
+          {/* Behavior Instructions Section */}
+          <div className="space-y-3">
+            <div className="flex items-center space-x-2">
+              <svg className="w-5 h-5 text-neutral-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+              </svg>
+              <span className="text-sm font-medium text-neutral-400">BEHAVIOR INSTRUCTIONS</span>
+              <span className="text-xs text-neutral-500 ml-2">Advanced Instructions</span>
+            </div>
+            <p className="text-sm text-neutral-500">Define how your AI agent should act and communicate during conversations with users.</p>
+            <textarea
+              value={agentPrompt}
+              onChange={(e) => setAgentPrompt(e.target.value)}
+              placeholder="e.g. You are a helpful customer service representative. Always provide accurate answers based on available information. Never fabricate or guess at information you don't have."
+              className="w-full h-40 bg-black/50 border border-neutral-800/50 rounded-2xl px-5 py-4 text-white placeholder-neutral-600 focus:outline-none focus:border-white/20 transition-colors resize-none"
+            />
+            <div className="text-xs text-neutral-500">{agentPrompt.length}/10000</div>
+          </div>
+
           {/* Initial Message Section */}
           <div className="space-y-3">
             <div className="flex items-center space-x-2">
@@ -270,43 +288,14 @@ const CreateNewPage: React.FC = () => {
               </svg>
               <span className="text-sm font-medium text-neutral-400">INITIAL MESSAGE</span>
             </div>
-            <p className="text-sm text-neutral-500">Your agent will say this message to start every conversation.</p>
+            <p className="text-sm text-neutral-500">This message will be spoken by your agent at the beginning of each call.</p>
             <textarea
               value={agentGreeting}
               onChange={(e) => setAgentGreeting(e.target.value)}
-              placeholder="e.g. Hey! How may we be of assistance today?"
+              placeholder="e.g. Hello! How can I help you today?"
               className="w-full h-32 bg-black/50 border border-neutral-800/50 rounded-2xl px-5 py-4 text-white placeholder-neutral-600 focus:outline-none focus:border-white/20 transition-colors resize-none"
             />
             <div className="text-xs text-neutral-500">{agentGreeting.length}/250</div>
-          </div>
-
-          {/* Behavior Instructions Section */}
-          <div className="space-y-3">
-            <div className="flex items-center space-x-2">
-              <svg className="w-5 h-5 text-neutral-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-              </svg>
-              <button
-                onClick={() => setBehaviorInstructionsCollapsed(!behaviorInstructionsCollapsed)}
-                className="flex items-center space-x-2 text-sm font-medium text-neutral-400 hover:text-white transition-colors"
-              >
-                <span>BEHAVIOR INSTRUCTIONS</span>
-                <ChevronDownIcon className={`w-4 h-4 transition-transform ${behaviorInstructionsCollapsed ? 'rotate-0' : 'rotate-180'}`} />
-              </button>
-              <span className="text-xs text-neutral-500 ml-2">Advanced Instructions</span>
-            </div>
-            {!behaviorInstructionsCollapsed && (
-              <>
-                <p className="text-sm text-neutral-500">Give instructions to your AI about how it should behave and interact with others in conversation.</p>
-                <textarea
-                  value={agentPrompt}
-                  onChange={(e) => setAgentPrompt(e.target.value)}
-                  placeholder="e.g. You are a customer support agent. You will try to respond to the user's questions with the best answers given your knowledge. You will never make up information."
-                  className="w-full h-40 bg-black/50 border border-neutral-800/50 rounded-2xl px-5 py-4 text-white placeholder-neutral-600 focus:outline-none focus:border-white/20 transition-colors resize-none"
-                />
-                <div className="text-xs text-neutral-500">{agentPrompt.length}/10000</div>
-              </>
-            )}
           </div>
 
             </div>
@@ -331,7 +320,7 @@ const CreateNewPage: React.FC = () => {
                       onClick={() => setSelectedBehavior('professional')}
                     >
                       <h3 className="text-white font-medium mb-1">Professional Use Case</h3>
-                      <p className="text-sm text-neutral-400">Configured to be more polite, formal, staying on task, and assisting.</p>
+                      <p className="text-sm text-neutral-400">Designed for formal, courteous interactions while maintaining focus and being helpful.</p>
                     </div>
                     
                     <div 
@@ -343,7 +332,7 @@ const CreateNewPage: React.FC = () => {
                       onClick={() => setSelectedBehavior('character')}
                     >
                       <h3 className="text-white font-medium mb-1">Character Use Case</h3>
-                      <p className="text-sm text-neutral-400">Configured to assume and impersonate identity.</p>
+                      <p className="text-sm text-neutral-400">Set up to embody and maintain a specific character or persona.</p>
                     </div>
                     
                     <div 
@@ -355,7 +344,7 @@ const CreateNewPage: React.FC = () => {
                       onClick={() => setSelectedBehavior('chatty')}
                     >
                       <h3 className="text-white font-medium mb-1">Super Chatty</h3>
-                      <p className="text-sm text-neutral-400">For casual laid-back conversations, like you are talking to a friend.</p>
+                      <p className="text-sm text-neutral-400">Perfect for relaxed, friendly chats as if speaking with a close companion.</p>
                     </div>
                     
                     <div 
@@ -367,7 +356,7 @@ const CreateNewPage: React.FC = () => {
                       onClick={() => setSelectedBehavior('concise')}
                     >
                       <h3 className="text-white font-medium mb-1">Concise & Direct</h3>
-                      <p className="text-sm text-neutral-400">Gets straight to the point with brief, clear responses.</p>
+                      <p className="text-sm text-neutral-400">Delivers quick, straightforward answers without unnecessary details.</p>
                     </div>
                     
                     <div 
@@ -379,7 +368,7 @@ const CreateNewPage: React.FC = () => {
                       onClick={() => setSelectedBehavior('empathetic')}
                     >
                       <h3 className="text-white font-medium mb-1">Empathetic & Supportive</h3>
-                      <p className="text-sm text-neutral-400">Warm, understanding, and emotionally aware responses.</p>
+                      <p className="text-sm text-neutral-400">Provides caring, compassionate replies with emotional intelligence.</p>
                     </div>
                   </div>
                 </div>
@@ -390,14 +379,14 @@ const CreateNewPage: React.FC = () => {
                 <div className="space-y-3">
                   <h2 className="text-xl font-medium text-white">Agent LLM</h2>
                   <p className="text-sm text-neutral-400">
-                    Select the large language model that will power your agent's intelligence. 
-                    <a href="#" className="text-green-400 hover:text-green-300 ml-1">Learn more</a>
+                    Choose the AI model that will drive your agent's conversational abilities. 
+                    <a href="#" className="text-blue-400 hover:text-blue-300 ml-1">Learn more</a>
                   </p>
                   <div className="relative">
                     <select
                       value={selectedLLM}
                       onChange={(e) => setSelectedLLM(e.target.value)}
-                      className="w-full bg-black/50 border border-neutral-800/50 rounded-2xl px-5 py-3 text-white appearance-none focus:outline-none focus:border-white/20 cursor-pointer transition-colors text-green-400"
+                      className="w-full bg-black/50 border border-neutral-800/50 rounded-2xl px-5 py-3 text-blue-400 appearance-none focus:outline-none focus:border-white/20 cursor-pointer transition-colors"
                     >
                       {llmOptions.map(llm => (
                         <option key={llm} value={llm}>{llm}</option>
@@ -410,7 +399,7 @@ const CreateNewPage: React.FC = () => {
                 {/* Custom Knowledge Section */}
                 <div className="space-y-3">
                   <h2 className="text-xl font-medium text-white">Custom Knowledge</h2>
-                  <p className="text-sm text-neutral-400">Add your custom knowledge to your agent.</p>
+                  <p className="text-sm text-neutral-400">Provide specialized information for your agent to reference.</p>
                   
                   {/* Text Input */}
                   <div className="space-y-3">
@@ -420,11 +409,11 @@ const CreateNewPage: React.FC = () => {
                       </svg>
                       <span className="text-sm font-medium text-white">TEXT INPUT</span>
                     </div>
-                    <p className="text-sm text-neutral-500">Paste in specific information your agent should know</p>
+                    <p className="text-sm text-neutral-500">Enter key details and facts your agent needs to understand</p>
                     <textarea
                       value={customKnowledge}
                       onChange={(e) => setCustomKnowledge(e.target.value)}
-                      placeholder="i.e. The more specialized knowledge and information your agent has, the closer to your expectations they will perform. If you're using an agent for Business, upload things like Business Hours, Answers to Frequently Asked Questions, Customer Service Policies, etc."
+                      placeholder="e.g. The more specific details you provide, the better your agent will meet your needs. For business use, include information like operating hours, FAQ responses, service guidelines, product details, etc."
                       className="w-full h-40 bg-black/50 border border-neutral-800/50 rounded-2xl px-5 py-4 text-white placeholder-neutral-600 focus:outline-none focus:border-white/20 transition-colors resize-none"
                     />
                     <div className="text-xs text-neutral-500">{customKnowledge.length}/100000</div>
@@ -438,8 +427,8 @@ const CreateNewPage: React.FC = () => {
                       </svg>
                       <span className="text-sm font-medium text-white">FILES</span>
                     </div>
-                    <p className="text-sm text-neutral-500">Attach up to 10 supporting documents. Smaller files have better performance.</p>
-                    <button className="w-full bg-black/50 border border-neutral-800/50 rounded-2xl px-5 py-3 text-green-400 hover:border-white/20 transition-colors flex items-center justify-center space-x-2">
+                    <p className="text-sm text-neutral-500">Add a maximum of 10 reference files. Compact files work more efficiently.</p>
+                    <button className="w-full bg-black/50 border border-neutral-800/50 rounded-2xl px-5 py-3 text-blue-400 hover:border-white/20 transition-colors flex items-center justify-center space-x-2">
                       <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
                       </svg>
@@ -456,15 +445,15 @@ const CreateNewPage: React.FC = () => {
                     </svg>
                     <span className="text-sm font-medium text-white">GUARDRAILS</span>
                   </div>
-                  <p className="text-sm text-neutral-400">Force the agent to reply using only content from the knowledge base instead of general knowledge?</p>
+                  <p className="text-sm text-neutral-400">Restrict agent responses to only use information from the provided knowledge base?</p>
                   <label className="flex items-center space-x-3 cursor-pointer">
                     <input
                       type="checkbox"
                       checked={guardrailsEnabled}
                       onChange={(e) => setGuardrailsEnabled(e.target.checked)}
-                      className="w-5 h-5 rounded border-neutral-600 bg-black/50 text-green-400 focus:ring-green-400"
+                      className="w-5 h-5 rounded border-neutral-600 bg-black/50 text-blue-400 focus:ring-blue-400"
                     />
-                    <span className="text-sm text-neutral-300">Yes, only provide answers from knowledge base.</span>
+                    <span className="text-sm text-neutral-300">Yes, limit responses to knowledge base content only.</span>
                   </label>
                 </div>
 
@@ -476,20 +465,20 @@ const CreateNewPage: React.FC = () => {
                     </svg>
                     <span className="text-sm font-medium text-white">DYNAMIC CONTEXT</span>
                   </div>
-                  <p className="text-sm text-neutral-400">Enrich your agent with context-aware knowledge.</p>
+                  <p className="text-sm text-neutral-400">Enhance your agent with real-time contextual information.</p>
 
                   {/* Current Date & Time */}
-                  <div className={`border rounded-2xl p-4 transition-all ${currentDateEnabled ? 'border-green-400 bg-green-400/10' : 'border-neutral-800/50'}`}>
+                  <div className={`border rounded-2xl p-4 transition-all ${currentDateEnabled ? 'border-blue-400 bg-blue-400/10' : 'border-neutral-800/50'}`}>
                     <label className="flex items-start cursor-pointer">
                       <input
                         type="checkbox"
                         checked={currentDateEnabled}
                         onChange={(e) => setCurrentDateEnabled(e.target.checked)}
-                        className="mt-1 w-5 h-5 rounded border-neutral-600 bg-black/50 text-green-400 focus:ring-green-400"
+                        className="mt-1 w-5 h-5 rounded border-neutral-600 bg-black/50 text-blue-400 focus:ring-blue-400"
                       />
                       <div className="ml-3 flex-1">
                         <h3 className="text-white font-medium mb-1">Current Date & Time</h3>
-                        <p className="text-sm text-neutral-400 mb-3">Tell your agent the current date and time</p>
+                        <p className="text-sm text-neutral-400 mb-3">Provide your agent with present date and time awareness</p>
                         {currentDateEnabled && (
                           <div className="space-y-2">
                             <label className="text-sm text-neutral-400">TIMEZONE</label>
@@ -512,17 +501,17 @@ const CreateNewPage: React.FC = () => {
                   </div>
 
                   {/* Caller Information */}
-                  <div className={`border rounded-2xl p-4 transition-all ${callerInfoEnabled ? 'border-green-400 bg-green-400/10' : 'border-neutral-800/50'}`}>
+                  <div className={`border rounded-2xl p-4 transition-all ${callerInfoEnabled ? 'border-blue-400 bg-blue-400/10' : 'border-neutral-800/50'}`}>
                     <label className="flex items-start cursor-pointer">
                       <input
                         type="checkbox"
                         checked={callerInfoEnabled}
                         onChange={(e) => setCallerInfoEnabled(e.target.checked)}
-                        className="mt-1 w-5 h-5 rounded border-neutral-600 bg-black/50 text-green-400 focus:ring-green-400"
+                        className="mt-1 w-5 h-5 rounded border-neutral-600 bg-black/50 text-blue-400 focus:ring-blue-400"
                       />
                       <div className="ml-3 flex-1">
                         <h3 className="text-white font-medium mb-1">Caller Information</h3>
-                        <p className="text-sm text-neutral-400">Add knowledge about the user's phone number or email when available</p>
+                        <p className="text-sm text-neutral-400">Include caller contact details like phone or email if accessible</p>
                       </div>
                     </label>
                   </div>
@@ -539,8 +528,8 @@ const CreateNewPage: React.FC = () => {
                     <h2 className="text-2xl font-medium text-white">Deploy Agent To Phone</h2>
                   </div>
                   <p className="text-sm text-neutral-400">
-                    This number will cost $2.00/mo, in addition to the charges for minutes spoken. 
-                    <a href="#" className="text-white underline ml-1">See pricing for more details.</a>
+                    Monthly fee is $2.00 for this number, plus additional costs for call minutes. 
+                    <a href="#" className="text-white underline ml-1">View detailed pricing information.</a>
                   </p>
                 </div>
 
@@ -554,8 +543,8 @@ const CreateNewPage: React.FC = () => {
                   </div>
                   <div className="flex-1">
                     <p className="text-white">
-                      Deploying your AI agent to a phone number is only available to paid users. 
-                      <a href="#" className="underline ml-1">Upgrade to gain access.</a>
+                      Phone number deployment requires a paid subscription. 
+                      <a href="#" className="underline ml-1">Upgrade now to enable this feature.</a>
                     </p>
                   </div>
                 </div>
@@ -576,7 +565,7 @@ const CreateNewPage: React.FC = () => {
                     </svg>
                     <h3 className="text-xl font-medium text-white">Call Transfer</h3>
                   </div>
-                  <p className="text-sm text-neutral-400">Purchase a number to enable call transfer.</p>
+                  <p className="text-sm text-neutral-400">Get a phone number to activate call forwarding capabilities.</p>
                   
                   <button className="w-full bg-black/50 border border-neutral-800/50 rounded-2xl px-5 py-2.5 text-neutral-400 hover:border-white/20 transition-colors flex items-center justify-center space-x-3">
                     <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -588,31 +577,6 @@ const CreateNewPage: React.FC = () => {
               </div>
             ) : null}
 
-            </div>
-          </div>
-
-          {/* Right Agent Preview Panel */}
-          <div className="w-96 bg-black flex flex-col p-6">
-            <div className="flex-1 flex flex-col items-center justify-center">
-              {/* Preview Container */}
-              <div className="bg-neutral-900/80 rounded-2xl p-12 flex flex-col items-center w-full h-[500px] border border-neutral-800/30">
-                <div className="mb-8">
-                  <h2 className="text-sm font-medium text-neutral-400 text-center">AGENT PREVIEW</h2>
-                </div>
-                
-                {/* Microphone Button */}
-                <div className="w-20 h-20 rounded-full bg-black border-2 border-white flex items-center justify-center mb-12 hover:bg-neutral-900 transition-colors cursor-pointer">
-                  <svg className="w-8 h-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
-                  </svg>
-                </div>
-                
-                {/* Conversation ID */}
-                <div className="text-center">
-                  <div className="text-sm font-medium text-neutral-300 mb-2">Conversation ID</div>
-                  <div className="text-xs text-neutral-500 font-mono">KDyKbfjklGAJEwaKDnyZ</div>
-                </div>
-              </div>
             </div>
           </div>
         </div>
@@ -638,7 +602,7 @@ const CreateNewPage: React.FC = () => {
             {getNextStepLabel() && (
               <button 
                 onClick={goToNextStep}
-                className="bg-blue-600/20 hover:bg-blue-600/30 border border-blue-500/20 text-white font-medium px-4 py-2.5 rounded-2xl transition-all duration-200 flex items-center space-x-2 w-40"
+                className="bg-blue-600/30 hover:bg-blue-600/40 border border-blue-500/20 text-white font-medium px-4 py-2.5 rounded-2xl transition-all duration-200 flex items-center space-x-2 w-40"
               >
                 <div className="text-left flex-1">
                   <div className="text-sm font-medium leading-tight text-blue-400">Next</div>
