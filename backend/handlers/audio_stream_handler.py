@@ -46,7 +46,6 @@ class AudioStreamHandler:
         self.speech_start_frames = 2  # 60ms of speech to start (2 * 30ms)
         self.speech_prefetch_frames = 7  # ~200ms of silence (7 * 30ms)
         self.speech_confirm_frames = 27  # ~800ms of silence (27 * 30ms)
-        self.interrupt_frames = 10  # 300ms of speech required to interrupt agent (10 * 30ms)
         
         # Minimum speech duration
         self.min_speech_duration = VAD_CONFIG["min_speech_duration"]
@@ -66,9 +65,6 @@ class AudioStreamHandler:
         
         # Performance tracking
         self.speech_start_time = None
-        
-        # Interruption detection buffer
-        self.interrupt_buffer = bytearray()  # Store recent frames for interruption detection
         
     def set_interrupt_callback(self, callback):
         """Set the callback function for interruptions"""
@@ -112,75 +108,53 @@ class AudioStreamHandler:
             
             # Voice Activity Detection logic using WebRTC VAD
             if is_speech:
-                # Speech detected
+                # --- IMMEDIATE INTERRUPTION --- 
+                # If agent is speaking, interrupt immediately on any speech detection
+                if self.is_agent_speaking and not self.is_interrupting:
+                    self.is_interrupting = True
+                    print(f"{timestamp()} 🛑 User started speaking while agent is active - interrupting")
+                    print(f"{timestamp()} 📤 Sending stop_audio_immediately message to frontend")
+                    
+                    # Send message to stop audio playback on the frontend
+                    await self.websocket.send_json({
+                        "type": "stop_audio_immediately", 
+                        "timestamp": time.time()
+                    })
+                    
+                    # Cancel backend tasks
+                    if self.interrupt_callback:
+                        await self.interrupt_callback()
+
+                    # Notify frontend of the interruption
+                    await self.websocket.send_json({
+                        "type": "user_interruption",
+                        "timestamp": time.time()
+                    })
+                    
+                    # CRITICAL: Resume listening immediately so interrupting speech can be processed as new query
+                    self.is_listening_for_user = True
+                    print(f"{timestamp()} ▶️  Listening to interrupting speech (will process as new query)")
+                elif self.is_agent_speaking and self.is_interrupting:
+                    # Already interrupting, just continue
+                    pass
+                elif not self.is_agent_speaking:
+                    # Normal speech while agent is not speaking - continue to regular detection
+                    pass
+                else:
+                    print(f"{timestamp()} 🔍 DEBUG: Speech detected but no interruption (agent_speaking={self.is_agent_speaking}, interrupting={self.is_interrupting})")
+
+                # --- REGULAR SPEECH DETECTION ---
                 self.speech_counter += 1
                 self.silence_counter = 0
                 
-                # During agent speech, accumulate potential interruption audio
-                if not self.is_listening_for_user:
-                    # Add frame to interruption buffer
-                    self.interrupt_buffer.extend(frame)
-                    # Keep only recent frames (last 300ms)
-                    max_interrupt_buffer = self.frame_size * 10  # 10 frames = 300ms
-                    if len(self.interrupt_buffer) > max_interrupt_buffer:
-                        self.interrupt_buffer = self.interrupt_buffer[-max_interrupt_buffer:]
-                    
-                    # Debug: log when we detect voice during agent speech
-                    if self.speech_counter <= self.interrupt_frames:
-                        print(f"{timestamp()} 🎤 Voice detected during agent speech - frame {self.speech_counter}/{self.interrupt_frames} (WebRTC VAD)")
-                    
-                    # Require multiple consecutive frames of speech to trigger interruption
-                    # This helps filter out brief noises like table bangs
-                    if self.speech_counter == self.interrupt_frames:
-                        print(f"{timestamp()} 🛑 User interruption detected after {self.interrupt_frames} frames ({self.interrupt_frames * self.frame_duration_ms}ms) (WebRTC VAD)")
-                        print(f"{timestamp()} 📤 Sending stop_audio_immediately message to frontend")
-                        # IMMEDIATELY tell frontend to stop audio playback
-                        await self.websocket.send_json({
-                            "type": "stop_audio_immediately", 
-                            "timestamp": time.time()
-                        })
-                        # Call the interrupt callback to cancel backend tasks
-                        if self.interrupt_callback:
-                            await self.interrupt_callback()
-                        # Notify about the interruption
-                        await self.websocket.send_json({
-                            "type": "user_interruption",
-                            "timestamp": time.time()
-                        })
-                        # Mark that we're in interruption mode
-                        self.is_interrupting = True
-                        # Resume listening BUT in interruption mode
-                        self.is_listening_for_user = True
-                        print(f"{timestamp()} ▶️  Listening to interrupting speech (will not process as new query)")
-                        # Clear interruption buffer
-                        self.interrupt_buffer.clear()
+                # Use faster detection for interruptions vs normal speech
+                required_frames = 1 if self.is_agent_speaking else self.speech_start_frames
                 
-                if not self.is_speaking and self.speech_counter >= self.speech_start_frames:
+                if not self.is_speaking and self.speech_counter >= required_frames:
                     # Start of speech detected
                     self.is_speaking = True
                     self.speech_start_time = time.time()
                     print(f"{timestamp()} 🎤 Speech started (WebRTC VAD)")
-                    
-                    # Check if agent is currently speaking/playing audio
-                    if self.is_agent_speaking and not self.is_interrupting:
-                        print(f"{timestamp()} 🛑 User started speaking while agent is active - interrupting")
-                        print(f"{timestamp()} 📤 Sending stop_audio_immediately message to frontend")
-                        # IMMEDIATELY tell frontend to stop audio playback
-                        await self.websocket.send_json({
-                            "type": "stop_audio_immediately", 
-                            "timestamp": time.time()
-                        })
-                        # Call the interrupt callback to cancel backend tasks
-                        if self.interrupt_callback:
-                            await self.interrupt_callback()
-                        # Notify about the interruption
-                        await self.websocket.send_json({
-                            "type": "user_interruption",
-                            "timestamp": time.time()
-                        })
-                        # Mark that we're in interruption mode
-                        self.is_interrupting = True
-                        print(f"{timestamp()} ▶️  Listening to interrupting speech (will not process as new query)")
                     
                     # Cancel any speculative processing if user resumes speaking
                     if self.speculative_task and not self.speculative_task.done():
@@ -208,10 +182,6 @@ class AudioStreamHandler:
                 self.silence_counter += 1
                 self.speech_counter = 0
                 
-                # Clear interrupt buffer when silence detected during agent speech
-                if not self.is_listening_for_user:
-                    self.interrupt_buffer.clear()
-                
                 if self.is_speaking:
                     # Continue adding to buffer during short pauses
                     self.speech_buffer.extend(frame)
@@ -236,21 +206,25 @@ class AudioStreamHandler:
                         buffer_size_ms = len(self.speech_buffer) / 16
                         print(f"{timestamp()} ✅ Speech confirmed ended (~800ms silence, duration: {speech_duration:.2f}s)")
                         
-                        # Check if this was an interruption or a new query
-                        if self.is_interrupting:
-                            print(f"{timestamp()} 🔇 Interruption speech ended - not processing as new query")
-                            self.is_interrupting = False
-                            # Stay listening for new queries
-                        elif self.is_listening_for_user:
-                            # Normal user query - process transcript
+                        # Process all speech as queries when listening for user input
+                        if self.is_listening_for_user and len(self.speech_buffer) > self.min_speech_duration:
+                            if self.is_interrupting:
+                                print(f"{timestamp()} 🔄 Processing interrupting speech as new query")
+                                self.is_interrupting = False
+                            
+                            # Process transcript (interrupting or normal)
                             if self.speculative_transcript:
                                 print(f"{timestamp()} 🎯 Using prefetched transcript: '{self.speculative_transcript}'")
                                 await self._commit_transcript(self.speculative_transcript)
                                 self.speculative_transcript = None
-                            elif len(self.speech_buffer) > self.min_speech_duration:
+                            else:
                                 # No prefetch available, process normally
                                 print(f"{timestamp()} 📝 No prefetch available, processing normally")
                                 await self._process_speech_segment(bytes(self.speech_buffer))
+                        elif self.is_interrupting:
+                            # Just reset interruption state if not listening
+                            print(f"{timestamp()} 🔇 Interruption speech ended - not listening for user input")
+                            self.is_interrupting = False
                         else:
                             print(f"{timestamp()} 🔇 Not listening for user input")
                         
@@ -348,7 +322,8 @@ class AudioStreamHandler:
         """Resume processing user speech (after agent response)"""
         print(f"{timestamp()} ▶️  Resuming user speech processing")
         self.is_listening_for_user = True
-        self.is_agent_speaking = False
+        # NOTE: Do NOT reset is_agent_speaking here! 
+        # Agent speaking state should only be controlled by audio playback completion
         self.is_interrupting = False
         # Clear any buffered audio and speculative state
         self.speech_buffer.clear()
@@ -360,12 +335,14 @@ class AudioStreamHandler:
         self.is_speculating = False
         
     def set_agent_speaking(self, speaking: bool):
-        """Set whether agent audio is currently playing"""
+        """Set whether the agent is currently speaking"""
+        if self.is_agent_speaking != speaking:
+            print(f"{timestamp()} 🎧 Agent speaking state: {self.is_agent_speaking} → {speaking}")
         self.is_agent_speaking = speaking
-        if speaking:
-            print(f"{timestamp()} 🔊 Agent audio playback started")
-        else:
-            print(f"{timestamp()} 🔇 Agent audio playback stopped")
+        if not speaking:
+            # Reset interruption state when agent stops speaking
+            self.is_interrupting = False
+            print(f"{timestamp()} ✅ Ready for user input (agent finished speaking)")
         
     async def get_transcript(self) -> Optional[str]:
         """Get the next complete transcript"""

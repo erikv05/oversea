@@ -32,6 +32,13 @@ async def websocket_endpoint(websocket: WebSocket):
                 task.cancel()
         active_tasks.clear()
         current_generation_id += 1  # Increment ID to invalidate old responses
+        
+        # Ensure system is ready to continue conversation after interruption
+        print(f"{timestamp()} 🔄 Post-interruption cleanup: ensuring system is ready for new conversation")
+        await websocket.send_json({
+            "type": "interruption_complete",
+            "timestamp": time.time()
+        })
     
     # Set the interrupt callback
     audio_handler.set_interrupt_callback(handle_interrupt)
@@ -48,13 +55,16 @@ async def websocket_endpoint(websocket: WebSocket):
                 # Check for complete transcripts
                 transcript = await audio_handler.get_transcript()
                 if transcript:
+                    print(f"\n{timestamp()} 🔄 NEW CONVERSATION TURN STARTING")
+                    print(f"{timestamp()} 📋 Conversation state: listening={audio_handler.is_listening_for_user}, agent_speaking={audio_handler.is_agent_speaking}, interrupting={audio_handler.is_interrupting}")
+                    
                     response_pipeline_start = time.time()
                     # Calculate delay from speech end
                     if audio_handler.speech_start_time:
                         transcript_delay = response_pipeline_start - audio_handler.speech_start_time
-                        print(f"\n{timestamp()} 📝 Transcript: '{transcript}' (received {transcript_delay:.2f}s after speech start)")
+                        print(f"{timestamp()} 📝 Transcript: '{transcript}' (received {transcript_delay:.2f}s after speech start)")
                     else:
-                        print(f"\n{timestamp()} 📝 Transcript: '{transcript}'")
+                        print(f"{timestamp()} 📝 Transcript: '{transcript}'")
                     print(f"{timestamp()} ⏱️  Starting response pipeline...")
                     
                     # Pause listening while we process the response
