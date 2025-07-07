@@ -36,7 +36,7 @@ const MyAgentsPage: React.FC<MyAgentsPageProps> = ({ onNavigate, onAgentSelect }
 
   const fetchAgents = async () => {
     try {
-      const response = await fetch('http://localhost:8000/api/agents/');
+      const response = await fetch('/api/agents/');
       if (response.ok) {
         const data = await response.json();
         setAgents(data);

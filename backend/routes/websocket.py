@@ -137,7 +137,7 @@ async def websocket_endpoint(websocket: WebSocket):
                                     audio_handler.set_agent_speaking(True)
                                     await websocket.send_json({
                                         "type": "audio_chunk",
-                                        "audio_url": audio_url,
+                                        "audio_url": f"/audio/{audio_url.split('/')[-1]}",
                                         "text": first_sentence,
                                         "timestamp": time.time()
                                     })
@@ -152,7 +152,7 @@ async def websocket_endpoint(websocket: WebSocket):
                                     audio_handler.set_agent_speaking(True)
                                     await websocket.send_json({
                                         "type": "audio_chunk",
-                                        "audio_url": remaining_audio_url,
+                                        "audio_url": f"/audio/{remaining_audio_url.split('/')[-1]}",
                                         "text": remaining_text,
                                         "timestamp": time.time()
                                     })
@@ -269,7 +269,7 @@ async def websocket_endpoint(websocket: WebSocket):
                             audio_handler.set_agent_speaking(True)
                             await websocket.send_json({
                                 "type": "greeting_audio",
-                                "audio_url": greeting_audio_url,
+                                "audio_url": f"/audio/{greeting_audio_url.split('/')[-1]}",
                                 "timestamp": time.time()
                             })
                     

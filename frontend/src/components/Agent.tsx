@@ -41,7 +41,7 @@ function Agent({ agentId, onBack }: AgentProps) {
     if (!agentId) return;
     
     try {
-      const response = await fetch(`http://localhost:8000/api/agents/${agentId}`);
+      const response = await fetch(`/api/agents/${agentId}`);
       if (response.ok) {
         const data = await response.json();
         setAgentData(data);
@@ -81,7 +81,10 @@ function Agent({ agentId, onBack }: AgentProps) {
     console.log("Attempting to connect to WebSocket at ws://localhost:8000/ws");
 
     try {
-      wsRef.current = new WebSocket("ws://localhost:8000/ws");
+      // Use wss:// for production, ws:// for local development
+      const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const wsHost = window.location.host;
+      wsRef.current = new WebSocket(`${wsProtocol}//${wsHost}/ws`);
     } catch (error) {
       console.error("Failed to create WebSocket:", error);
       alert("Failed to create WebSocket connection: " + error);
@@ -144,7 +147,7 @@ function Agent({ agentId, onBack }: AgentProps) {
           console.log("Greeting audio received:", data.audio_url);
           // Play greeting audio
           if (audioPlayerRef.current) {
-            const audioUrl = `http://localhost:8000${data.audio_url}`;
+            const audioUrl = data.audio_url;
             audioPlayerRef.current.addToQueue(audioUrl, data.text || "");
           }
           break;
@@ -215,7 +218,7 @@ function Agent({ agentId, onBack }: AgentProps) {
           
         case "audio_chunk": {
           // Queue audio chunk for playback
-          const audioUrl = `http://localhost:8000${data.audio_url}`;
+          const audioUrl = data.audio_url;
           console.log("[FRONTEND] Received audio_chunk:", audioUrl, "text:", data.text);
           
           if (audioPlayerRef.current) {

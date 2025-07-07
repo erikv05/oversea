@@ -1,0 +1,33 @@
+steps:
+  # Build the image
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['build', '-f', 'Dockerfile.cloudrun', '-t', 'gcr.io/$PROJECT_ID/voice-agent', '.']
+
+  # Push the image
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'gcr.io/$PROJECT_ID/voice-agent']
+
+  # Deploy to Cloud Run
+  - name: 'gcr.io/cloud-builders/gcloud'
+    args:
+      - 'run'
+      - 'deploy'
+      - 'voice-agent'
+      - '--image=gcr.io/$PROJECT_ID/voice-agent'
+      - '--platform=managed'
+      - '--region=us-central1'
+      - '--allow-unauthenticated'
+      - '--port=8080'
+      - '--memory=2Gi'
+      - '--cpu=2'
+      - '--min-instances=0'
+      - '--max-instances=10'
+      - '--set-env-vars=CORS_ORIGINS=https://voice.addojo.ai'
+      - '--set-env-vars=GEMINI_API_KEY=${_GEMINI_API_KEY}'
+      - '--set-env-vars=DEEPGRAM_API_KEY=${_DEEPGRAM_API_KEY}'
+      - '--set-env-vars=ELEVENLABS_API_KEY=${_ELEVENLABS_API_KEY}'
+      - '--set-env-vars=ELEVENLABS_VOICE_ID=${_ELEVENLABS_VOICE_ID}'
+      - '--set-env-vars=ELEVENLABS_MODEL=eleven_turbo_v2'
+      - '--set-env-vars=GEMINI_MODEL=gemini-1.5-flash'
+
+timeout: 1200s

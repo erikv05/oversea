@@ -32,6 +32,7 @@ yarn-error.log*
 
 # Temporary files
 temp_audio/
+audio_files/
 *.mp3
 *.wav
 
@@ -47,3 +48,18 @@ Thumbs.db.claude/
 
 # AI
 .claude/
+
+# Kubernetes secrets
+k8s/secrets.yaml
+k8s/secrets-*.yaml
+
+# Google Cloud service accounts
+service-account-key.json
+*.json
+!package*.json
+!tsconfig*.json
+
+# SSL Certificates
+*.pem
+*.key
+*.crt

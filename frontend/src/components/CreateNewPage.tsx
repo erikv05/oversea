@@ -87,7 +87,7 @@ const CreateNewPage: React.FC<CreateNewPageProps> = ({ onAgentCreated }) => {
         timezone: selectedTimezone
       };
 
-      const response = await fetch('http://localhost:8000/api/agents/', {
+      const response = await fetch('/api/agents/', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

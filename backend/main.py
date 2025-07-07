@@ -31,6 +31,11 @@ app.include_router(agents_router)
 def read_root():
     return {"message": "Voice Agent API - Fast Response Version", "version": "2.0"}
 
+# Health check endpoint
+@app.get("/health")
+def health_check():
+    return {"status": "healthy"}
+
 # WebSocket endpoint
 app.websocket("/ws")(websocket_endpoint)
 

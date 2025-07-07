@@ -1,0 +1,28 @@
+version: '3.8'
+
+services:
+  backend:
+    build: ./backend
+    ports:
+      - "8000:8000"
+    environment:
+      - CORS_ORIGINS=http://localhost:3000,http://localhost:5173
+    env_file:
+      - ./backend/.env
+    volumes:
+      - ./backend/audio_files:/app/audio_files
+    networks:
+      - voice-network
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+    networks:
+      - voice-network
+
+networks:
+  voice-network:
+    driver: bridge
