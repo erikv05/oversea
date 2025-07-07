@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { AudioPlayer } from './AudioPlayer'
 import { AudioStreamer } from './AudioStreamer'
+import { WS_URL } from './config'
 
 function App() {
   const [isListening, setIsListening] = useState(false)
@@ -45,10 +46,10 @@ function App() {
     })
     
     // Initialize WebSocket connection
-    console.log('Attempting to connect to WebSocket at ws://localhost:8000/ws')
+    console.log(`Attempting to connect to WebSocket at ${WS_URL}`)
     
     try {
-      wsRef.current = new WebSocket('ws://localhost:8000/ws')
+      wsRef.current = new WebSocket(WS_URL)
     } catch (error) {
       console.error('Failed to create WebSocket:', error)
       alert('Failed to create WebSocket connection: ' + error)
