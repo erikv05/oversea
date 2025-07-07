@@ -19,6 +19,7 @@ from mcp_client import MCPClient
 import queue
 from typing import Optional, AsyncGenerator
 import wave
+import webrtcvad
 
 # Global semaphore for TTS rate limiting (max 3 concurrent requests)
 TTS_SEMAPHORE = asyncio.Semaphore(3)
@@ -81,13 +82,19 @@ def read_root():
     return {"message": "Voice Agent API - Fast Response Version"}
 
 class AudioStreamHandler:
-    """Handles streaming audio with aggressive Voice Activity Detection for speed"""
+    """Handles streaming audio with WebRTC Voice Activity Detection"""
     
     def __init__(self, websocket: WebSocket, loop: asyncio.AbstractEventLoop):
         self.websocket = websocket
         self.loop = loop
         self.is_running = True
         self.is_listening_for_user = True
+        
+        # Initialize WebRTC VAD
+        self.vad = webrtcvad.Vad()
+        # Set aggressiveness mode (0-3, where 3 is most aggressive)
+        # Mode 2 is a good balance - filters out most non-speech sounds
+        self.vad.set_mode(2)
         
         # Voice Activity Detection parameters
         self.speech_buffer = bytearray()  # Buffer for current speech segment
@@ -99,14 +106,18 @@ class AudioStreamHandler:
         self.pre_speech_buffer_size = 3200  # 200ms of audio
         self.pre_speech_buffer = bytearray()
         
-        # Optimized thresholds for 1 second total delay
-        self.energy_threshold = 400  # Higher threshold to avoid noise triggers
-        self.speech_start_frames = 5  # 50ms to start (more robust)
-        self.speech_end_frames = 100   # 1000ms of silence (1 second as requested)
-        self.frame_size = 160  # 10ms frames at 8kHz
+        # WebRTC VAD parameters
+        # WebRTC VAD works with 10, 20, or 30ms frames at 8, 16, 32, or 48 kHz
+        self.frame_duration_ms = 30  # Use 30ms frames
+        self.frame_size = int(8000 * self.frame_duration_ms / 1000) * 2  # bytes for 30ms at 8kHz, 16-bit
+        self.speech_start_frames = 3  # 90ms of speech to start (3 * 30ms)
+        self.speech_end_frames = 33   # ~1000ms of silence (33 * 30ms)
         
         # Minimum speech duration
         self.min_speech_duration = 4000  # 500ms minimum speech (allow shorter utterances)
+        
+        # Audio accumulator for VAD processing
+        self.audio_accumulator = bytearray()
         
         # Transcript handling
         self.transcript_queue = asyncio.Queue()
@@ -126,24 +137,31 @@ class AudioStreamHandler:
             self.processing_task.cancel()
             
     async def add_audio(self, audio_data: bytes):
-        """Process incoming audio data with VAD"""
+        """Process incoming audio data with WebRTC VAD"""
         if not self.is_running:
             return
+        
+        # Add incoming audio to accumulator
+        self.audio_accumulator.extend(audio_data)
+        
+        # Process accumulated audio in chunks suitable for WebRTC VAD
+        while len(self.audio_accumulator) >= self.frame_size:
+            # Extract frame
+            frame = bytes(self.audio_accumulator[:self.frame_size])
+            self.audio_accumulator = self.audio_accumulator[self.frame_size:]
             
-        # Process audio in frames for VAD (10ms frames)
-        for i in range(0, len(audio_data), self.frame_size):
-            frame = audio_data[i:i + self.frame_size]
-            if len(frame) < self.frame_size:
-                break  # Skip incomplete frames
-                
             # Always add to pre-speech buffer (circular buffer)
             self._add_to_pre_speech_buffer(frame)
-                
-            # Calculate frame energy
-            frame_energy = self._calculate_frame_energy(frame)
             
-            # Voice Activity Detection logic
-            if frame_energy > self.energy_threshold:
+            # Run WebRTC VAD on the frame
+            try:
+                is_speech = self.vad.is_speech(frame, 8000)
+            except Exception as e:
+                print(f"{timestamp()} ⚠️  VAD error: {e}")
+                is_speech = False
+            
+            # Voice Activity Detection logic using WebRTC VAD
+            if is_speech:
                 # Speech detected
                 self.speech_counter += 1
                 self.silence_counter = 0
@@ -152,7 +170,7 @@ class AudioStreamHandler:
                     # Start of speech detected
                     self.is_speaking = True
                     self.speech_start_time = time.time()
-                    print(f"{timestamp()} 🎤 Speech started (energy: {frame_energy:.0f}, threshold: {self.energy_threshold})")
+                    print(f"{timestamp()} 🎤 Speech started (WebRTC VAD)")
                     
                     # Add pre-speech buffer to capture beginning of speech
                     self.speech_buffer.extend(self.pre_speech_buffer)
@@ -166,7 +184,7 @@ class AudioStreamHandler:
                     # Add frame to speech buffer
                     self.speech_buffer.extend(frame)
             else:
-                # Silence detected
+                # Non-speech detected
                 self.silence_counter += 1
                 self.speech_counter = 0
                 
@@ -174,7 +192,7 @@ class AudioStreamHandler:
                     # Continue adding to buffer during short pauses
                     self.speech_buffer.extend(frame)
                     
-                    # End of speech after 1000ms (1 second)
+                    # End of speech after ~1000ms (1 second) of silence
                     if self.silence_counter >= self.speech_end_frames:
                         # End of speech detected
                         self.is_speaking = False
@@ -204,18 +222,6 @@ class AudioStreamHandler:
             # Remove oldest data
             self.pre_speech_buffer = self.pre_speech_buffer[-self.pre_speech_buffer_size:]
     
-    def _calculate_frame_energy(self, frame: bytes) -> float:
-        """Calculate the energy level of an audio frame"""
-        # Convert bytes to 16-bit integers
-        energy = 0
-        num_samples = 0
-        
-        for i in range(0, len(frame) - 1, 2):
-            value = int.from_bytes(frame[i:i+2], byteorder='little', signed=True)
-            energy += abs(value)
-            num_samples += 1
-        
-        return energy / num_samples if num_samples > 0 else 0
     
     async def _transcribe_audio(self, audio_data: bytes) -> Optional[str]:
         """Transcribe audio with Whisper"""
