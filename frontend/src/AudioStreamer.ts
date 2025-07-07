@@ -45,6 +45,10 @@ export class AudioStreamer {
         if (!this._isStreaming) return;
         
         const inputData = e.inputBuffer.getChannelData(0);
+
+        // Remove frontend VAD - rely only on backend WebRTC VAD
+        // The backend has more sophisticated VAD that can distinguish
+        // between speech and non-speech sounds like bangs
         
         // Downsample from 48kHz to 8kHz (factor of 6)
         const downsampledData = this.downsample(inputData, 48000, 8000);

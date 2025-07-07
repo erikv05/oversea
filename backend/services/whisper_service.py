@@ -40,20 +40,8 @@ async def transcribe_audio(audio_data: bytes) -> Optional[str]:
         transcribe_start = time.time()
         print(f"{timestamp()} 🎯 Starting Whisper transcription")
         
-        # Check audio energy level first
-        total_energy = 0
-        sample_count = 0
-        for i in range(0, len(audio_data) - 1, 2):
-            value = int.from_bytes(audio_data[i:i+2], byteorder='little', signed=True)
-            total_energy += abs(value)
-            sample_count += 1
-        
-        avg_energy = total_energy / sample_count if sample_count > 0 else 0
-        
-        # Skip if audio is too quiet (likely silence)
-        if avg_energy < 100:
-            print(f"{timestamp()} ⚠️  Whisper: Skipping - audio too quiet (energy: {avg_energy:.1f})")
-            return None
+        # Trust WebRTC VAD - no additional energy checks
+        # WebRTC VAD has already determined this is speech
         
         # Convert to WAV
         print(f"{timestamp()} 🎯 Converting to WAV format")

@@ -18,11 +18,31 @@ async def websocket_endpoint(websocket: WebSocket):
     # Initialize audio stream handler with current event loop
     loop = asyncio.get_event_loop()
     audio_handler = AudioStreamHandler(websocket, loop)
-    await audio_handler.start()
     
     # Track active generation tasks
     active_tasks = set()
     current_generation_id = 0
+    
+    # Define interrupt handler
+    async def handle_interrupt():
+        nonlocal current_generation_id
+        print(f"{timestamp()} 🛑 Voice activity interrupt - cancelling {len(active_tasks)} tasks")
+        for task in active_tasks:
+            if not task.done():
+                task.cancel()
+        active_tasks.clear()
+        current_generation_id += 1  # Increment ID to invalidate old responses
+        
+        # Ensure system is ready to continue conversation after interruption
+        print(f"{timestamp()} 🔄 Post-interruption cleanup: ensuring system is ready for new conversation")
+        await websocket.send_json({
+            "type": "interruption_complete",
+            "timestamp": time.time()
+        })
+    
+    # Set the interrupt callback
+    audio_handler.set_interrupt_callback(handle_interrupt)
+    await audio_handler.start()
     
     # Track conversation
     conversation = []
@@ -35,13 +55,16 @@ async def websocket_endpoint(websocket: WebSocket):
                 # Check for complete transcripts
                 transcript = await audio_handler.get_transcript()
                 if transcript:
+                    print(f"\n{timestamp()} 🔄 NEW CONVERSATION TURN STARTING")
+                    print(f"{timestamp()} 📋 Conversation state: listening={audio_handler.is_listening_for_user}, agent_speaking={audio_handler.is_agent_speaking}, interrupting={audio_handler.is_interrupting}")
+                    
                     response_pipeline_start = time.time()
                     # Calculate delay from speech end
                     if audio_handler.speech_start_time:
                         transcript_delay = response_pipeline_start - audio_handler.speech_start_time
-                        print(f"\n{timestamp()} 📝 Transcript: '{transcript}' (received {transcript_delay:.2f}s after speech start)")
+                        print(f"{timestamp()} 📝 Transcript: '{transcript}' (received {transcript_delay:.2f}s after speech start)")
                     else:
-                        print(f"\n{timestamp()} 📝 Transcript: '{transcript}'")
+                        print(f"{timestamp()} 📝 Transcript: '{transcript}'")
                     print(f"{timestamp()} ⏱️  Starting response pipeline...")
                     
                     # Pause listening while we process the response
@@ -67,6 +90,7 @@ async def websocket_endpoint(websocket: WebSocket):
                             full_response = ""
                             first_sentence = ""
                             first_tts_task = None
+                            first_audio_time = None  # Initialize to avoid UnboundLocalError
                             
                             # Track timing
                             llm_start = time.time()
@@ -104,6 +128,8 @@ async def websocket_endpoint(websocket: WebSocket):
                                     first_audio_time = time.time() - response_pipeline_start
                                     print(f"{timestamp()} 🎉 First audio ready in {first_audio_time:.2f}s from user stop")
                                     
+                                    # Mark that agent is speaking
+                                    audio_handler.set_agent_speaking(True)
                                     await websocket.send_json({
                                         "type": "audio_chunk",
                                         "audio_url": audio_url,
@@ -117,6 +143,8 @@ async def websocket_endpoint(websocket: WebSocket):
                                 print(f"{timestamp()} 🔊 TTS: Generating remaining audio")
                                 remaining_audio_url = await generate_tts_audio_fast(remaining_text)
                                 if remaining_audio_url:
+                                    # Mark that agent is speaking (in case first chunk didn't exist)
+                                    audio_handler.set_agent_speaking(True)
                                     await websocket.send_json({
                                         "type": "audio_chunk",
                                         "audio_url": remaining_audio_url,
@@ -137,10 +165,8 @@ async def websocket_endpoint(websocket: WebSocket):
                             total_time = time.time() - response_pipeline_start
                             print(f"{timestamp()} ✅ Response pipeline complete in {total_time:.2f}s")
                             
-                            # Calculate actual user-perceived delay
-                            if audio_handler.speech_start_time:
-                                user_perceived_delay = time.time() - audio_handler.speech_start_time
-                                speech_to_audio_delay = first_audio_time
+                            # Calculate actual user-perceived delay - only if we have audio timing
+                            if audio_handler.speech_start_time and first_audio_time is not None:
                                 print(f"{timestamp()} 📊 Timing Breakdown:")
                                 print(f"    • Speech duration: {(response_pipeline_start - audio_handler.speech_start_time):.2f}s")
                                 print(f"    • VAD prefetch @ 200ms, confirm @ 800ms")  
@@ -148,12 +174,14 @@ async def websocket_endpoint(websocket: WebSocket):
                                 print(f"    • LLM first token: {(llm_start - response_pipeline_start):.2f}s")
                                 print(f"    • TTS generation: {(first_audio_time - (llm_start - response_pipeline_start)):.2f}s")
                                 print(f"    • 🎯 Total delay (speech end → audio): {first_audio_time:.2f}s\n")
-                            else:
+                            elif first_audio_time is not None:
                                 print(f"{timestamp()} 📊 Standard Breakdown:")
                                 print(f"    • VAD + Whisper: ~0.8s (speculative)")
                                 print(f"    • LLM first token: {(llm_start - response_pipeline_start):.2f}s")
                                 print(f"    • TTS generation: {(first_audio_time - (llm_start - response_pipeline_start)):.2f}s")
                                 print(f"    • Total: {total_time:.2f}s\n")
+                            else:
+                                print(f"{timestamp()} 📊 No audio generated - text-only response ({total_time:.2f}s)\n")
                             
                             # Resume listening for user input
                             audio_handler.resume_listening()
@@ -207,9 +235,15 @@ async def websocket_endpoint(websocket: WebSocket):
                     # Client is configuring audio settings
                     print(f"{timestamp()} ⚙️  Audio config received")
                     
+                elif data.get("type") == "audio_playback_complete":
+                    # Frontend finished playing audio
+                    print(f"{timestamp()} 🔇 Audio playback complete")
+                    audio_handler.set_agent_speaking(False)
+                    
                 elif data.get("type") == "interrupt":
                     # Cancel all active tasks
-                    print(f"{timestamp()} 🛑 Interruption - cancelling {len(active_tasks)} tasks")
+                    reason = data.get("reason", "unknown")
+                    print(f"{timestamp()} 🛑 Interruption ({reason}) - cancelling {len(active_tasks)} tasks")
                     for task in active_tasks:
                         if not task.done():
                             task.cancel()

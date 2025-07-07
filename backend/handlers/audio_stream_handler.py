@@ -3,8 +3,9 @@ import asyncio
 import time
 from typing import Optional
 from fastapi import WebSocket
+import webrtcvad
 from config.settings import VAD_CONFIG
-from services.whisper_service import transcribe_audio
+from services.deepgram_service import transcribe_audio
 from utils.helpers import timestamp
 
 
@@ -16,6 +17,15 @@ class AudioStreamHandler:
         self.loop = loop
         self.is_running = True
         self.is_listening_for_user = True
+        self.interrupt_callback = None  # Callback for interruptions
+        self.is_agent_speaking = False  # Track if agent audio is playing
+        self.is_interrupting = False  # Track if user is interrupting agent
+        
+        # Initialize WebRTC VAD
+        self.vad = webrtcvad.Vad()
+        # Use mode 3 for maximum aggressiveness in filtering non-speech sounds
+        # Combined with our voice detection, this provides robust filtering
+        self.vad.set_mode(3)
         
         # Voice Activity Detection parameters
         self.speech_buffer = bytearray()  # Buffer for current speech segment
@@ -23,19 +33,29 @@ class AudioStreamHandler:
         self.silence_counter = 0
         self.speech_counter = 0
         
+        # Enhanced voice detection for interruption
+        self.interruption_speech_counter = 0  # Separate counter for interruption detection
+        self.min_interruption_frames = 8  # 240ms of voice-like audio (8 * 30ms) - increased for robustness
+        
         # Pre-speech circular buffer
         self.pre_speech_buffer_size = VAD_CONFIG["pre_speech_buffer_size"]
         self.pre_speech_buffer = bytearray()
         
-        # VAD thresholds
-        self.energy_threshold = VAD_CONFIG["energy_threshold"]
-        self.speech_start_frames = VAD_CONFIG["speech_start_frames"]
-        self.speech_prefetch_frames = VAD_CONFIG["speech_prefetch_frames"]
-        self.speech_confirm_frames = VAD_CONFIG["speech_confirm_frames"]
-        self.frame_size = VAD_CONFIG["frame_size"]
+        # WebRTC VAD frame configuration
+        # WebRTC VAD works with 10, 20, or 30ms frames at 8, 16, 32, or 48 kHz
+        self.frame_duration_ms = 30  # Use 30ms frames
+        self.frame_size = int(8000 * self.frame_duration_ms / 1000) * 2  # bytes for 30ms at 8kHz, 16-bit
+        
+        # Adjusted thresholds for WebRTC VAD
+        self.speech_start_frames = 2  # 60ms of speech to start (2 * 30ms)
+        self.speech_prefetch_frames = 7  # ~200ms of silence (7 * 30ms)
+        self.speech_confirm_frames = 27  # ~800ms of silence (27 * 30ms)
         
         # Minimum speech duration
         self.min_speech_duration = VAD_CONFIG["min_speech_duration"]
+        
+        # Audio accumulator for frame alignment
+        self.audio_accumulator = bytearray()
         
         # Speculative processing
         self.speculative_task = None
@@ -50,6 +70,10 @@ class AudioStreamHandler:
         # Performance tracking
         self.speech_start_time = None
         
+    def set_interrupt_callback(self, callback):
+        """Set the callback function for interruptions"""
+        self.interrupt_callback = callback
+        
     async def start(self):
         """Start the audio processing task"""
         self.processing_task = asyncio.create_task(self._process_audio_stream())
@@ -63,33 +87,93 @@ class AudioStreamHandler:
             self.speculative_task.cancel()
             
     async def add_audio(self, audio_data: bytes):
-        """Process incoming audio data with VAD"""
+        """Process incoming audio data with WebRTC VAD"""
         if not self.is_running:
             return
+        
+        # Add incoming audio to accumulator
+        self.audio_accumulator.extend(audio_data)
+        
+        # Process accumulated audio in chunks suitable for WebRTC VAD
+        while len(self.audio_accumulator) >= self.frame_size:
+            # Extract frame
+            frame = bytes(self.audio_accumulator[:self.frame_size])
+            self.audio_accumulator = self.audio_accumulator[self.frame_size:]
             
-        # Process audio in frames for VAD (10ms frames)
-        for i in range(0, len(audio_data), self.frame_size):
-            frame = audio_data[i:i + self.frame_size]
-            if len(frame) < self.frame_size:
-                break  # Skip incomplete frames
-                
             # Always add to pre-speech buffer (circular buffer)
             self._add_to_pre_speech_buffer(frame)
-                
-            # Calculate frame energy
-            frame_energy = self._calculate_frame_energy(frame)
             
-            # Voice Activity Detection logic
-            if frame_energy > self.energy_threshold:
-                # Speech detected
+            # Run WebRTC VAD on the frame
+            try:
+                is_speech = self.vad.is_speech(frame, 8000)
+            except Exception as e:
+                print(f"{timestamp()} ⚠️  VAD error: {e}")
+                is_speech = False
+            
+            # Voice Activity Detection logic using WebRTC VAD
+            if is_speech:
+                # Enhanced voice detection for interruption
+                is_voice_like = self._is_voice_like(frame)
+                
+                # --- INTERRUPTION DETECTION ---
+                if self.is_agent_speaking and not self.is_interrupting:
+                    if is_voice_like:
+                        # Voice-like audio detected, increment counter
+                        self.interruption_speech_counter += 1
+                        if self.interruption_speech_counter <= 3:  # Only log first few frames to avoid spam
+                            print(f"{timestamp()} 🎤 Voice-like audio detected ({self.interruption_speech_counter}/{self.min_interruption_frames})")
+                        
+                        # Only interrupt after minimum voice-like duration
+                        if self.interruption_speech_counter >= self.min_interruption_frames:
+                            self.is_interrupting = True
+                            print(f"{timestamp()} 🛑 CONFIRMED voice activity - interrupting agent")
+                            print(f"{timestamp()} 📤 Sending stop_audio_immediately message to frontend")
+                            
+                            # Send message to stop audio playback on the frontend
+                            await self.websocket.send_json({
+                                "type": "stop_audio_immediately", 
+                                "timestamp": time.time()
+                            })
+                            
+                            # Cancel backend tasks
+                            if self.interrupt_callback:
+                                await self.interrupt_callback()
+
+                            # Notify frontend of the interruption
+                            await self.websocket.send_json({
+                                "type": "user_interruption",
+                                "timestamp": time.time()
+                            })
+                            
+                            # CRITICAL: Resume listening immediately so interrupting speech can be processed as new query
+                            self.is_listening_for_user = True
+                            print(f"{timestamp()} ▶️  Listening to interrupting speech (will process as new query)")
+                    else:
+                        # Not voice-like (could be banging, clicking, etc.), reset counter
+                        if self.interruption_speech_counter > 0:
+                            print(f"{timestamp()} 🔇 Non-voice audio detected (banging/clicking?) - resetting interruption counter")
+                        self.interruption_speech_counter = 0
+                elif self.is_agent_speaking and self.is_interrupting:
+                    # Already interrupting, continue processing
+                    pass
+                elif not self.is_agent_speaking:
+                    # Reset interruption counter when agent not speaking
+                    self.interruption_speech_counter = 0
+                else:
+                    print(f"{timestamp()} 🔍 DEBUG: Speech detected but no interruption (agent_speaking={self.is_agent_speaking}, interrupting={self.is_interrupting})")
+
+                # --- REGULAR SPEECH DETECTION ---
                 self.speech_counter += 1
                 self.silence_counter = 0
                 
-                if not self.is_speaking and self.speech_counter >= self.speech_start_frames:
+                # Use faster detection for interruptions vs normal speech
+                required_frames = 1 if self.is_agent_speaking else self.speech_start_frames
+                
+                if not self.is_speaking and self.speech_counter >= required_frames:
                     # Start of speech detected
                     self.is_speaking = True
                     self.speech_start_time = time.time()
-                    print(f"{timestamp()} 🎤 Speech started (energy: {frame_energy:.0f}, threshold: {self.energy_threshold})")
+                    print(f"{timestamp()} 🎤 Speech started (WebRTC VAD)")
                     
                     # Cancel any speculative processing if user resumes speaking
                     if self.speculative_task and not self.speculative_task.done():
@@ -113,7 +197,11 @@ class AudioStreamHandler:
                     # Add frame to speech buffer
                     self.speech_buffer.extend(frame)
             else:
-                # Silence detected
+                # Silence detected - reset interruption counter
+                if self.interruption_speech_counter > 0:
+                    print(f"{timestamp()} 🔇 Silence detected - resetting interruption counter ({self.interruption_speech_counter} frames)")
+                self.interruption_speech_counter = 0
+                
                 self.silence_counter += 1
                 self.speech_counter = 0
                 
@@ -121,35 +209,47 @@ class AudioStreamHandler:
                     # Continue adding to buffer during short pauses
                     self.speech_buffer.extend(frame)
                     
-                    # Start prefetch after 200ms of silence
-                    if self.silence_counter == self.speech_prefetch_frames:
+                    # Start prefetch after ~200ms of silence (only if listening for user)
+                    if self.silence_counter == self.speech_prefetch_frames and self.is_listening_for_user:
                         if len(self.speech_buffer) > self.min_speech_duration and not self.is_speculating:
                             self.is_speculating = True
                             buffer_size_ms = len(self.speech_buffer) / 16
-                            print(f"{timestamp()} 🔮 Starting prefetch (200ms silence, {buffer_size_ms:.0f}ms audio)")
+                            print(f"{timestamp()} 🔮 Starting prefetch (~200ms silence, {buffer_size_ms:.0f}ms audio)")
                             
                             # Start prefetch task
                             self.speculative_task = asyncio.create_task(
                                 self._prefetch_process(bytes(self.speech_buffer))
                             )
                     
-                    # Confirm speech ended after 800ms total silence
+                    # Confirm speech ended after ~800ms total silence
                     if self.silence_counter >= self.speech_confirm_frames:
                         self.is_speaking = False
                         self.speech_confirmed = True
                         speech_duration = time.time() - self.speech_start_time
                         buffer_size_ms = len(self.speech_buffer) / 16
-                        print(f"{timestamp()} ✅ Speech confirmed ended (800ms silence, duration: {speech_duration:.2f}s)")
+                        print(f"{timestamp()} ✅ Speech confirmed ended (~800ms silence, duration: {speech_duration:.2f}s)")
                         
-                        # If we have a prefetched transcript, use it
-                        if self.speculative_transcript:
-                            print(f"{timestamp()} 🎯 Using prefetched transcript: '{self.speculative_transcript}'")
-                            await self._commit_transcript(self.speculative_transcript)
-                            self.speculative_transcript = None
-                        elif len(self.speech_buffer) > self.min_speech_duration:
-                            # No prefetch available, process normally
-                            print(f"{timestamp()} 📝 No prefetch available, processing normally")
-                            await self._process_speech_segment(bytes(self.speech_buffer))
+                        # Process all speech as queries when listening for user input
+                        if self.is_listening_for_user and len(self.speech_buffer) > self.min_speech_duration:
+                            if self.is_interrupting:
+                                print(f"{timestamp()} 🔄 Processing interrupting speech as new query")
+                                self.is_interrupting = False
+                            
+                            # Process transcript (interrupting or normal)
+                            if self.speculative_transcript:
+                                print(f"{timestamp()} 🎯 Using prefetched transcript: '{self.speculative_transcript}'")
+                                await self._commit_transcript(self.speculative_transcript)
+                                self.speculative_transcript = None
+                            else:
+                                # No prefetch available, process normally
+                                print(f"{timestamp()} 📝 No prefetch available, processing normally")
+                                await self._process_speech_segment(bytes(self.speech_buffer))
+                        elif self.is_interrupting:
+                            # Just reset interruption state if not listening
+                            print(f"{timestamp()} 🔇 Interruption speech ended - not listening for user input")
+                            self.is_interrupting = False
+                        else:
+                            print(f"{timestamp()} 🔇 Not listening for user input")
                         
                         # Clear state
                         self.speech_buffer.clear()
@@ -169,18 +269,82 @@ class AudioStreamHandler:
             # Remove oldest data
             self.pre_speech_buffer = self.pre_speech_buffer[-self.pre_speech_buffer_size:]
     
-    def _calculate_frame_energy(self, frame: bytes) -> float:
-        """Calculate the energy level of an audio frame"""
-        # Convert bytes to 16-bit integers
-        energy = 0
-        num_samples = 0
+    def _is_voice_like(self, frame: bytes) -> bool:
+        """Enhanced voice detection using frequency analysis and energy patterns"""
+        import numpy as np
         
-        for i in range(0, len(frame) - 1, 2):
-            value = int.from_bytes(frame[i:i+2], byteorder='little', signed=True)
-            energy += abs(value)
-            num_samples += 1
-        
-        return energy / num_samples if num_samples > 0 else 0
+        try:
+            # Convert bytes to numpy array
+            audio_data = np.frombuffer(frame, dtype=np.int16).astype(np.float32)
+            
+            # 1. Energy checks - voice should have moderate energy levels
+            energy = np.mean(audio_data ** 2)
+            if energy < 500:  # Increased minimum threshold to filter out quiet background noise
+                return False
+            if energy > 50000000:  # Too loud for normal voice
+                return False
+            
+            # 2. Check for reasonable amplitude range (voice is usually not clipping)
+            max_amplitude = np.max(np.abs(audio_data))
+            if max_amplitude > 28000:  # Close to clipping, likely not voice
+                return False
+            
+            # 3. Zero-crossing rate - voice has moderate ZCR, not too high (like fricatives) or too low (like tones)
+            zero_crossings = np.sum(np.diff(np.sign(audio_data)) != 0)
+            zcr = zero_crossings / len(audio_data)
+            if zcr < 0.02 or zcr > 0.4:  # Voice typically has ZCR between 0.02-0.4
+                return False
+            
+            # 4. Frequency analysis using FFT
+            fft = np.fft.rfft(audio_data)
+            freqs = np.fft.rfftfreq(len(audio_data), 1/8000)
+            magnitude = np.abs(fft)
+            
+            # Voice frequency bands
+            # Fundamental frequency range (85-255Hz for adult voices)
+            fundamental = np.sum(magnitude[(freqs >= 85) & (freqs <= 255)])
+            # First formant range (300-900Hz)
+            formant1 = np.sum(magnitude[(freqs >= 300) & (freqs <= 900)])
+            # Second formant range (900-2500Hz)
+            formant2 = np.sum(magnitude[(freqs >= 900) & (freqs <= 2500)])
+            # Higher formants (2500-3400Hz)
+            formant3 = np.sum(magnitude[(freqs >= 2500) & (freqs <= 3400)])
+            
+            total_energy = np.sum(magnitude)
+            if total_energy == 0:
+                return False
+            
+            # Calculate ratios
+            voice_energy = fundamental + formant1 + formant2 + formant3
+            voice_ratio = voice_energy / total_energy
+            
+            # Check for too much high-frequency content (clicking, banging)
+            high_freq_energy = np.sum(magnitude[freqs > 3400])
+            high_freq_ratio = high_freq_energy / total_energy
+            
+            # Check for too much very low frequency content (rumbling, thumps)
+            low_freq_energy = np.sum(magnitude[freqs < 85])
+            low_freq_ratio = low_freq_energy / total_energy
+            
+            # 5. Spectral centroid - voice typically has centroid in mid-range
+            spectral_centroid = np.sum(freqs * magnitude) / total_energy if total_energy > 0 else 0
+            
+            # Voice characteristics:
+            # - At least 40% energy in voice frequencies (increased from 30%)
+            # - Less than 40% energy in high frequencies (reduced from 60%)
+            # - Less than 30% energy in very low frequencies
+            # - Spectral centroid between 500-2500 Hz
+            is_voice = (voice_ratio > 0.4 and 
+                       high_freq_ratio < 0.4 and 
+                       low_freq_ratio < 0.3 and
+                       500 < spectral_centroid < 2500)
+            
+            return is_voice
+            
+        except Exception as e:
+            print(f"{timestamp()} ⚠️  Voice detection error: {e}")
+            # Fallback - be conservative and assume not voice to avoid false positives
+            return False
     
     async def _process_speech_segment(self, audio_data: bytes):
         """Process a complete speech segment with Whisper"""
@@ -247,13 +411,19 @@ class AudioStreamHandler:
     
     def pause_listening(self):
         """Pause processing user speech (during agent response)"""
-        print(f"{timestamp()} ⏸️  Pausing user speech processing")
+        print(f"{timestamp()} ⏸️  Pausing user speech processing (agent speaking)")
         self.is_listening_for_user = False
+        # Reset counters so interruption detection works immediately
+        self.speech_counter = 0
+        self.silence_counter = 0
         
     def resume_listening(self):
         """Resume processing user speech (after agent response)"""
         print(f"{timestamp()} ▶️  Resuming user speech processing")
         self.is_listening_for_user = True
+        # NOTE: Do NOT reset is_agent_speaking here! 
+        # Agent speaking state should only be controlled by audio playback completion
+        self.is_interrupting = False
         # Clear any buffered audio and speculative state
         self.speech_buffer.clear()
         self.is_speaking = False
@@ -262,6 +432,16 @@ class AudioStreamHandler:
         self.speculative_transcript = None
         self.speech_confirmed = False
         self.is_speculating = False
+        
+    def set_agent_speaking(self, speaking: bool):
+        """Set whether the agent is currently speaking"""
+        if self.is_agent_speaking != speaking:
+            print(f"{timestamp()} 🎧 Agent speaking state: {self.is_agent_speaking} → {speaking}")
+        self.is_agent_speaking = speaking
+        if not speaking:
+            # Reset interruption state when agent stops speaking
+            self.is_interrupting = False
+            print(f"{timestamp()} ✅ Ready for user input (agent finished speaking)")
         
     async def get_transcript(self) -> Optional[str]:
         """Get the next complete transcript"""

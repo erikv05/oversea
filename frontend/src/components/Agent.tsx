@@ -49,6 +49,13 @@ function Agent({ agentId, onBack }: AgentProps) {
       console.log("All audio finished playing");
       setIsProcessing(false);
       isProcessingRef.current = false;
+      
+      // Notify backend that audio playback is complete
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        wsRef.current.send(JSON.stringify({
+          type: "audio_playback_complete"
+        }));
+      }
     });
 
     // Initialize WebSocket connection
@@ -93,6 +100,14 @@ function Agent({ agentId, onBack }: AgentProps) {
       const data = JSON.parse(event.data);
 
       switch (data.type) {
+        case "stop_audio_immediately":
+          console.log("Backend detected voice activity - stopping audio immediately");
+          // Immediately stop audio playback
+          if (audioPlayerRef.current) {
+            audioPlayerRef.current.stop();
+          }
+          break;
+
         case "user_interruption":
           console.log("Backend detected user interruption:", data.text);
           if (isProcessingRef.current || (audioPlayerRef.current && audioPlayerRef.current.isPlaying())) {
