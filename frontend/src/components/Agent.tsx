@@ -343,6 +343,13 @@ function Agent({ agentId, onBack }: AgentProps) {
         audioPlayerRef.current.unlock();
       }
       
+      // Send call started message to backend
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        wsRef.current.send(JSON.stringify({
+          type: "call_started"
+        }));
+      }
+      
       startListening();
     }
   };

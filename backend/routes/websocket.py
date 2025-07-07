@@ -246,26 +246,32 @@ async def websocket_endpoint(websocket: WebSocket):
                     if agent_id and agent_id in agents_db:
                         current_agent = agents_db[agent_id]
                         print(f"{timestamp()} 🤖 Agent configured: {current_agent['name']}")
+                    
+                elif data.get("type") == "call_started":
+                    # User started the call - send greeting if configured
+                    print(f"{timestamp()} 📞 Call started")
+                    
+                    if current_agent and current_agent.get("greeting"):
+                        # Add greeting to conversation history
+                        conversation.append({"role": "assistant", "content": current_agent["greeting"]})
                         
-                        # Send initial greeting if configured
-                        if current_agent.get("greeting"):
+                        # Send greeting to frontend
+                        await websocket.send_json({
+                            "type": "agent_greeting",
+                            "text": current_agent["greeting"],
+                            "timestamp": time.time()
+                        })
+                        
+                        # Generate TTS for greeting
+                        greeting_audio_url = await generate_tts_audio_fast(current_agent["greeting"])
+                        if greeting_audio_url:
+                            # Mark agent as speaking before sending audio
+                            audio_handler.set_agent_speaking(True)
                             await websocket.send_json({
-                                "type": "agent_greeting",
-                                "text": current_agent["greeting"],
+                                "type": "greeting_audio",
+                                "audio_url": greeting_audio_url,
                                 "timestamp": time.time()
                             })
-                            
-                            # Generate TTS for greeting
-                            # Note: Voice selection would need to be implemented in the TTS service
-                            greeting_audio_url = await generate_tts_audio_fast(current_agent["greeting"])
-                            if greeting_audio_url:
-                                # Mark agent as speaking before sending audio
-                                audio_handler.set_agent_speaking(True)
-                                await websocket.send_json({
-                                    "type": "greeting_audio",
-                                    "audio_url": greeting_audio_url,
-                                    "timestamp": time.time()
-                                })
                     
                 elif data.get("type") == "audio_playback_complete":
                     # Frontend finished playing audio
