@@ -21,6 +21,9 @@ env/
 node_modules/
 npm-debug.log
 yarn-error.log
+# Root level Node.js files that confuse Cloud Build
+/package.json
+/package-lock.json
 
 # Environment files
 .env

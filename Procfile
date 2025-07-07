@@ -1,0 +1,1 @@
+web: exec supervisord -c /app/cloudrun/supervisord.conf
