@@ -6,9 +6,15 @@ export class AudioStreamer {
   private source: MediaStreamAudioSourceNode | null = null;
   private websocket: WebSocket | null = null;
   private _isStreaming = false;
+  private onVoiceActivity: (() => void) | null = null;
+  private vadThreshold = 0.02; // Adjusted threshold
   
   constructor() {
     console.log('[AudioStreamer] Initialized');
+  }
+
+  setOnVoiceActivity(callback: () => void) {
+    this.onVoiceActivity = callback;
   }
   
   get isStreaming() {
@@ -45,6 +51,19 @@ export class AudioStreamer {
         if (!this._isStreaming) return;
         
         const inputData = e.inputBuffer.getChannelData(0);
+
+        // VAD logic
+        let sum = 0;
+        for (let i = 0; i < inputData.length; i++) {
+          sum += inputData[i] * inputData[i];
+        }
+        const rms = Math.sqrt(sum / inputData.length);
+
+        if (rms > this.vadThreshold) {
+          if (this.onVoiceActivity) {
+            this.onVoiceActivity();
+          }
+        }
         
         // Downsample from 48kHz to 8kHz (factor of 6)
         const downsampledData = this.downsample(inputData, 48000, 8000);

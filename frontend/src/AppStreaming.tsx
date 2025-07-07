@@ -57,6 +57,11 @@ function App() {
       if (!initialized) {
         alert('Failed to initialize audio streaming. Please check microphone permissions.')
       }
+
+      audioStreamerRef.current.setOnVoiceActivity(() => {
+        console.log('[FRONTEND] Voice activity detected, interrupting AI...')
+        interruptAI()
+      })
     }
     
     wsRef.current.onerror = (error) => {
@@ -85,13 +90,6 @@ function App() {
           console.log('[FRONTEND] Received interim_transcript:', data.text)
           setCurrentUserText(data.text)
           setIsUserSpeaking(true)
-          
-          // If AI is speaking and user starts talking, interrupt
-          const isAudioPlaying = audioPlayerRef.current?.isPlaying() || false
-          if ((isProcessingRef.current || isAudioPlaying) && data.text.trim().length > 0) {
-            console.log('[FRONTEND] User speaking (interim), interrupting AI...')
-            interruptAI()
-          }
           break
         }
           
