@@ -5,6 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from config.settings import CORS_ORIGINS
 from routes.audio import router as audio_router
 from routes.websocket import websocket_endpoint
+from routes.agents import router as agents_router
 from utils.cleanup import cleanup_audio_files
 from mcp_client import MCPClient
 from config.settings import MCP_URL
@@ -23,6 +24,7 @@ app.add_middleware(
 
 # Include routers
 app.include_router(audio_router)
+app.include_router(agents_router)
 
 # Root endpoint
 @app.get("/")

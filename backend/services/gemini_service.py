@@ -14,7 +14,7 @@ else:
     model = None
 
 
-async def generate_gemini_response_stream(user_message: str, conversation: list):
+async def generate_gemini_response_stream(user_message: str, conversation: list, agent_config: dict = None):
     """Generate streaming response using Google Gemini API"""
     if not model:
         yield "I'm sorry, but the AI model is not configured. Please check your API keys."
@@ -23,8 +23,36 @@ async def generate_gemini_response_stream(user_message: str, conversation: list)
     try:
         start_time = time.time()
         
-        # Simplified prompt for speed
-        prompt = "You are a conversational voice assistant. Be concise and natural.\n\n"
+        # Build system prompt based on agent configuration
+        if agent_config:
+            # Build base prompt from agent settings
+            system_prompt = agent_config.get("system_prompt", "You are a conversational voice assistant.")
+            
+            # Add behavior-specific instructions
+            behavior = agent_config.get("behavior", "professional")
+            if behavior == "professional":
+                system_prompt += "\nBe professional, courteous, and helpful while maintaining focus."
+            elif behavior == "character":
+                system_prompt += "\nMaintain your character and persona throughout the conversation."
+            elif behavior == "chatty":
+                system_prompt += "\nBe friendly and conversational, as if speaking with a close companion."
+            elif behavior == "concise":
+                system_prompt += "\nProvide quick, straightforward answers without unnecessary details."
+            elif behavior == "empathetic":
+                system_prompt += "\nBe caring and compassionate, showing emotional intelligence."
+            
+            # Add custom knowledge if available
+            if agent_config.get("custom_knowledge"):
+                system_prompt += f"\n\nKnowledge base:\n{agent_config['custom_knowledge']}"
+            
+            # Add guardrails if enabled
+            if agent_config.get("guardrails_enabled"):
+                system_prompt += "\n\nIMPORTANT: Only use information from the provided knowledge base. Do not make up or guess information."
+            
+            prompt = system_prompt + "\n\n"
+        else:
+            # Default prompt if no agent config
+            prompt = "You are a conversational voice assistant. Be concise and natural.\n\n"
         
         # Minimal conversation history (last 4 messages for speed)
         for msg in conversation[-4:]:

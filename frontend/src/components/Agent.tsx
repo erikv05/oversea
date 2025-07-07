@@ -9,36 +9,53 @@ interface AgentProps {
 
 function Agent({ agentId, onBack }: AgentProps) {
   const [isListening, setIsListening] = useState(false);
-  const [transcript, setTranscript] = useState("");
+  const [currentUserText, setCurrentUserText] = useState("");
+  const [isUserSpeaking, setIsUserSpeaking] = useState(false);
   const [conversation, setConversation] = useState<
     Array<{ role: string; content: string }>
   >([]);
   const conversationRef = useRef<Array<{ role: string; content: string }>>([]);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [streamingText, setStreamingText] = useState("");
+  const [isAgentSpeaking, setIsAgentSpeaking] = useState(false);
   const [callDuration, setCallDuration] = useState(0);
-  const [conversationId] = useState("bhOBfzddFdvjBV2Mqdmc");
-  const audioStreamerRef = useRef<AudioStreamer | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
-  const audioRef = useRef<HTMLAudioElement | null>(null);
   const isInitialized = useRef(false);
   const isListeningRef = useRef(false);
   const isProcessingRef = useRef(false);
   const currentResponseRef = useRef("");
   const audioPlayerRef = useRef<AudioPlayer | null>(null);
-  const pendingResponseRef = useRef<string | null>(null);
-  const callTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const audioStreamerRef = useRef<AudioStreamer | null>(null);
+  const callTimerRef = useRef<number | null>(null);
+  const [agentData, setAgentData] = useState<any>(null);
+  const [loadingAgent, setLoadingAgent] = useState(true);
 
-  // Sample agent data - in real app this would come from props/API
-  const agentData = {
-    name: agentId === '1' ? 'Bozidar' : 'Untitled Agent',
-    conversations: agentId === '1' ? 4 : 2,
-    minutesSpoken: agentId === '1' ? 1.1 : 0
+  // Fetch agent data
+  useEffect(() => {
+    if (agentId) {
+      fetchAgentData();
+    }
+  }, [agentId]);
+
+  const fetchAgentData = async () => {
+    if (!agentId) return;
+    
+    try {
+      const response = await fetch(`http://localhost:8000/api/agents/${agentId}`);
+      if (response.ok) {
+        const data = await response.json();
+        setAgentData(data);
+      }
+    } catch (error) {
+      console.error('Error fetching agent data:', error);
+    } finally {
+      setLoadingAgent(false);
+    }
   };
 
   useEffect(() => {
     // Prevent double initialization in development mode
-    if (isInitialized.current) {
-      console.log("Already initialized, skipping...");
+    if (isInitialized.current || !agentData || loadingAgent) {
       return;
     }
     isInitialized.current = true;
@@ -46,9 +63,11 @@ function Agent({ agentId, onBack }: AgentProps) {
     // Initialize audio player
     audioPlayerRef.current = new AudioPlayer();
     audioPlayerRef.current.setOnComplete(() => {
-      console.log("All audio finished playing");
+      console.log("[FRONTEND] All audio finished playing");
       setIsProcessing(false);
       isProcessingRef.current = false;
+      setIsAgentSpeaking(false);
+      console.log("[FRONTEND] Agent speaking complete, ready for user input");
       
       // Notify backend that audio playback is complete
       if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
@@ -69,9 +88,23 @@ function Agent({ agentId, onBack }: AgentProps) {
       return;
     }
 
-    wsRef.current.onopen = () => {
+    wsRef.current.onopen = async () => {
       console.log("WebSocket connected successfully");
-      console.log("WebSocket readyState:", wsRef.current?.readyState);
+      
+      // Send agent configuration
+      if (agentId && wsRef.current) {
+        wsRef.current.send(JSON.stringify({
+          type: "agent_config",
+          agent_id: agentId
+        }));
+      }
+      
+      // Initialize audio streamer after WebSocket is connected
+      audioStreamerRef.current = new AudioStreamer();
+      const initialized = await audioStreamerRef.current.initialize(wsRef.current!);
+      if (!initialized) {
+        alert("Failed to initialize audio streaming. Please check microphone permissions.");
+      }
     };
 
     wsRef.current.onerror = (error) => {
@@ -100,211 +133,160 @@ function Agent({ agentId, onBack }: AgentProps) {
       const data = JSON.parse(event.data);
 
       switch (data.type) {
+        case "agent_greeting":
+          console.log("Agent greeting received:", data.text);
+          // Display greeting text in conversation
+          setConversation(prev => [...prev, { role: "assistant", content: data.text }]);
+          conversationRef.current = [...conversationRef.current, { role: "assistant", content: data.text }];
+          break;
+
+        case "greeting_audio":
+          console.log("Greeting audio received:", data.audio_url);
+          // Play greeting audio
+          if (audioPlayerRef.current) {
+            const audioUrl = `http://localhost:8000${data.audio_url}`;
+            audioPlayerRef.current.addToQueue(audioUrl, data.text || "");
+          }
+          break;
+
         case "stop_audio_immediately":
-          console.log("Backend detected voice activity - stopping audio immediately");
+          console.log("[FRONTEND] Backend detected voice activity - stopping audio immediately");
           // Immediately stop audio playback
           if (audioPlayerRef.current) {
             audioPlayerRef.current.stop();
           }
           break;
-
-        case "user_interruption":
-          console.log("Backend detected user interruption:", data.text);
-          if (isProcessingRef.current || (audioPlayerRef.current && audioPlayerRef.current.isPlaying())) {
-            interruptAI();
-            setTranscript(data.text);
-          }
+          
+        case "interim_transcript": {
+          // Show interim transcript
+          console.log("[FRONTEND] Received interim_transcript:", data.text);
+          setCurrentUserText(data.text);
+          setIsUserSpeaking(true);
           break;
-
-        case "stream_start": {
-          console.log("Stream started");
-
-          if (!pendingResponseRef.current) {
-            console.log("Response no longer needed, user continued speaking");
-            if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-              wsRef.current.send(JSON.stringify({ type: "interrupt" }));
-            }
-            break;
-          }
-
-          const userMessage = pendingResponseRef.current;
-          setConversation((prev) => {
-            if (
-              prev.length > 0 &&
-              prev[prev.length - 1].role === "user" &&
-              prev[prev.length - 1].content === userMessage
-            ) {
-              const newConv = [...prev, { role: "assistant", content: "" }];
-              conversationRef.current = newConv;
-              return newConv;
-            }
-            const newConv = [
-              ...prev,
-              { role: "user", content: userMessage },
-              { role: "assistant", content: "" },
-            ];
+        }
+          
+        case "user_transcript":
+          // Final transcript from user
+          console.log("[FRONTEND] Received user_transcript:", data.text);
+          
+          // Add to conversation
+          setConversation(prev => {
+            const newConv = [...prev, { role: "user", content: data.text }];
             conversationRef.current = newConv;
+            console.log("[FRONTEND] Updated conversation:", newConv);
             return newConv;
           });
-
-          currentResponseRef.current = "";
+          
+          // Clear user text and start processing
+          setCurrentUserText("");
+          setIsUserSpeaking(false);
           setIsProcessing(true);
           isProcessingRef.current = true;
+          setIsAgentSpeaking(true);
+          currentResponseRef.current = "";
+          setStreamingText("");
+          console.log("[FRONTEND] Set processing states");
+          
+          // Reset audio player for new response
+          if (audioPlayerRef.current) {
+            audioPlayerRef.current.reset();
+            console.log("[FRONTEND] Reset audio player");
+          }
           break;
-        }
-
-        case "text_chunk": {
+          
+        case "text_chunk":
+          // Update the streaming text
           currentResponseRef.current += data.text;
-          setConversation((prev) => {
+          setStreamingText(currentResponseRef.current);
+          console.log("[FRONTEND] Received text_chunk:", data.text);
+          
+          // Update conversation with partial response
+          setConversation(prev => {
             const newConv = [...prev];
-            if (
-              newConv.length > 0 &&
-              newConv[newConv.length - 1].role === "assistant"
-            ) {
+            if (newConv.length > 0 && newConv[newConv.length - 1].role === "assistant") {
               newConv[newConv.length - 1].content = currentResponseRef.current;
+            } else {
+              newConv.push({ role: "assistant", content: currentResponseRef.current });
             }
             conversationRef.current = newConv;
             return newConv;
           });
           break;
-        }
-
+          
         case "audio_chunk": {
+          // Queue audio chunk for playback
           const audioUrl = `http://localhost:8000${data.audio_url}`;
-          console.log("Received audio chunk:", audioUrl, "Text:", data.text);
-
+          console.log("[FRONTEND] Received audio_chunk:", audioUrl, "text:", data.text);
+          
           if (audioPlayerRef.current) {
-            pendingResponseRef.current = null;
             audioPlayerRef.current.addToQueue(audioUrl, data.text);
+            console.log("[FRONTEND] Added audio to queue");
           }
           break;
         }
-
-        case "interim_transcript":
-          {
-            console.log("Interim transcript received:", data.text);
-            setTranscript(data.text);
-            
-            const isAudioPlaying = audioPlayerRef.current?.isPlaying() || false;
-            if ((isProcessingRef.current || isAudioPlaying) && data.text.trim().length > 0) {
-              console.log("User speaking (interim), interrupting AI...");
-              interruptAI();
+          
+        case "stream_complete":
+          console.log("[FRONTEND] Received stream_complete:", data.full_text);
+          // Don't add to conversation here - it's already been added during streaming
+          setStreamingText("");
+          setCurrentUserText("");
+          setIsUserSpeaking(false);
+          setIsProcessing(false);
+          isProcessingRef.current = false;
+          // Note: setIsAgentSpeaking(false) happens when audio finishes playing
+          
+          // Continue listening if the call is still active
+          if (isListeningRef.current && audioStreamerRef.current) {
+            console.log("[FRONTEND] Checking audio streaming status...");
+            console.log("[FRONTEND] isListening:", isListeningRef.current);
+            console.log("[FRONTEND] audioStreamer exists:", !!audioStreamerRef.current);
+            console.log("[FRONTEND] isStreaming:", audioStreamerRef.current?.isStreaming);
+            // Audio streaming should already be running, just ensure it's active
+            if (!audioStreamerRef.current.isStreaming) {
+              console.log("[FRONTEND] Restarting audio streaming");
+              audioStreamerRef.current.start();
+            } else {
+              console.log("[FRONTEND] Audio streaming is already active");
             }
-            break;
-          }
-
-        case "user_transcript": {
-          console.log("User transcript received:", data.text);
-          setTranscript("");
-          
-          const userMessage = data.text;
-          pendingResponseRef.current = userMessage;
-          
-          if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-            wsRef.current.send(
-              JSON.stringify({
-                type: "message",
-                content: userMessage,
-                conversation: conversationRef.current,
-              })
-            );
           }
           break;
-        }
-
-        case "stream_complete": {
-          console.log("Stream complete, full text:", data.full_text);
-
-          if (!data.interrupted) {
-            setConversation((prev) => {
-              const newConv = [...prev];
-              if (
-                newConv.length > 0 &&
-                newConv[newConv.length - 1].role === "assistant"
-              ) {
-                newConv[newConv.length - 1].content = data.full_text;
-              }
-              conversationRef.current = newConv;
-              return newConv;
-            });
-          } else {
-            setConversation((prev) => {
-              const newConv = [...prev];
-              if (
-                newConv.length > 0 &&
-                newConv[newConv.length - 1].role === "assistant"
-              ) {
-                newConv.pop();
-              }
-              if (
-                newConv.length > 0 &&
-                newConv.length > 0 &&
-                newConv[newConv.length - 1].role === "user" &&
-                newConv[newConv.length - 1].content ===
-                  pendingResponseRef.current
-              ) {
-                newConv.pop();
-              }
-              conversationRef.current = newConv;
-              return newConv;
-            });
-          }
-
-          pendingResponseRef.current = null;
-          if (!audioPlayerRef.current || !audioPlayerRef.current.isPlaying()) {
-            setIsProcessing(false);
-            isProcessingRef.current = false;
-          }
-          break;
-        }
       }
     };
 
     return () => {
       console.log("Cleanup function called");
-      const ws = wsRef.current;
-      const audioStreamer = audioStreamerRef.current;
-      
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        console.log("Closing WebSocket in cleanup");
-        ws.close();
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        wsRef.current.close();
       }
-      if (audioStreamer) {
-        audioStreamer.stop();
+      if (audioStreamerRef.current) {
+        audioStreamerRef.current.destroy();
       }
       if (callTimerRef.current) {
         clearInterval(callTimerRef.current);
       }
       isInitialized.current = false;
     };
-  }, []);
+  }, [agentData, agentId, loadingAgent]);
 
   useEffect(() => {
     if (isListening && !callTimerRef.current) {
-      callTimerRef.current = setInterval(() => {
+      callTimerRef.current = window.setInterval(() => {
         setCallDuration(prev => prev + 1);
       }, 1000);
     } else if (!isListening && callTimerRef.current) {
       clearInterval(callTimerRef.current);
       callTimerRef.current = null;
     }
-
-    return () => {
-      if (callTimerRef.current) {
-        clearInterval(callTimerRef.current);
-      }
-    };
   }, [isListening]);
 
   const startListening = async () => {
     if (audioStreamerRef.current) {
       try {
         audioStreamerRef.current.start();
-        setTranscript("");
-        console.log("Audio streaming started successfully");
+        console.log("Started audio streaming");
       } catch (error) {
         console.error("Error starting audio streaming:", error);
-        alert("Failed to start audio streaming. Please check microphone permissions.");
+        alert(`Failed to start audio streaming: ${error}`);
         setIsListening(false);
         isListeningRef.current = false;
       }
@@ -315,59 +297,52 @@ function Agent({ agentId, onBack }: AgentProps) {
     if (audioStreamerRef.current) {
       audioStreamerRef.current.stop();
     }
-    if (audioRef.current) {
-      audioRef.current.pause();
-      audioRef.current = null;
-    }
+    // Reset audio player
     if (audioPlayerRef.current) {
-      audioPlayerRef.current.stop();
+      audioPlayerRef.current.reset();
     }
+    setCurrentUserText("");
+    setIsUserSpeaking(false);
   };
 
   const interruptAI = () => {
     console.log("Interrupting AI...");
-
+    
+    // Reset audio player for new conversation turn
     if (audioPlayerRef.current) {
-      audioPlayerRef.current.stop();
+      audioPlayerRef.current.reset();
     }
-
+    
+    // Cancel current LLM generation
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send(
-        JSON.stringify({
-          type: "interrupt",
-        })
-      );
+      wsRef.current.send(JSON.stringify({
+        type: "interrupt"
+      }));
     }
-
-    pendingResponseRef.current = null;
+    
+    // Reset states
     setIsProcessing(false);
     isProcessingRef.current = false;
-    setTranscript("");
+    setStreamingText("");
   };
 
   const toggleListening = () => {
     if (isListening) {
+      // Turn off
       setIsListening(false);
       isListeningRef.current = false;
       stopListening();
-      setTranscript("");
       setCallDuration(0);
-
-      if (audioRef.current) {
-        audioRef.current.pause();
-        audioRef.current = null;
-      }
-      if (audioPlayerRef.current) {
-        audioPlayerRef.current.stop();
-      }
     } else {
+      // Turn on
       setIsListening(true);
       isListeningRef.current = true;
-
+      
+      // Unlock audio player on user interaction
       if (audioPlayerRef.current) {
         audioPlayerRef.current.unlock();
       }
-
+      
       startListening();
     }
   };
@@ -395,6 +370,22 @@ function Agent({ agentId, onBack }: AgentProps) {
       ))}
     </div>
   );
+
+  if (loadingAgent) {
+    return (
+      <div className="flex flex-col h-full bg-black text-white items-center justify-center">
+        <div className="text-neutral-400">Loading agent...</div>
+      </div>
+    );
+  }
+
+  if (!agentData) {
+    return (
+      <div className="flex flex-col h-full bg-black text-white items-center justify-center">
+        <div className="text-neutral-400">Agent not found</div>
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col h-full bg-black text-white">
@@ -450,81 +441,49 @@ function Agent({ agentId, onBack }: AgentProps) {
               <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
               </svg>
-              <span>{agentData.minutesSpoken} minutes spoken</span>
+              <span>{agentData.minutes_spoken?.toFixed(1) || 0} minutes spoken</span>
             </div>
           </div>
         </div>
 
         {/* Conversation ID */}
-        <div className="bg-neutral-900/50 rounded-3xl px-4 py-3 mb-8">
-          <div className="text-sm text-neutral-400 mb-1">Conversation ID</div>
-          <div className="text-sm font-mono text-neutral-300">{conversationId}</div>
+        <div className="text-center mb-8">
+          <p className="text-xs text-neutral-500 uppercase tracking-wider mb-1">CONVERSATION ID</p>
+          <p className="text-sm text-neutral-400 font-mono">bhOBfzddFdvjBV2Mqdmc</p>
         </div>
+
+        {/* Call Status */}
+        {isListening && (
+          <div className="mb-8">
+            <p className="text-green-400 text-center mb-2">Call Active</p>
+            <p className="text-2xl font-mono text-center">{formatTime(callDuration)}</p>
+          </div>
+        )}
 
         {/* Audio Waveform */}
-        <div className="mb-8">
-          <AudioWaveform />
-        </div>
+        {isListening && <AudioWaveform />}
 
-        {/* Status */}
-        <div className="flex items-center space-x-2 mb-2">
-          {isListening && (
-            <>
-              <div className="w-3 h-3 bg-blue-400 rounded-full animate-pulse" />
-              <span className="text-sm text-neutral-300">listening...</span>
-            </>
-          )}
-        </div>
-
-        {/* Timer */}
-        {isListening && (
-          <div className="text-2xl font-mono text-white mb-8">
-            {formatTime(callDuration)}
-          </div>
-        )}
-
-        {/* Action Buttons */}
-        <div className="flex flex-col space-y-4 w-full max-w-md">
-          <button
-            onClick={toggleListening}
-            className={`w-full py-3 rounded-full font-medium transition-all flex items-center justify-center space-x-2 ${
-              isListening
-                ? "bg-red-600 hover:bg-red-700 text-white"
-                : "bg-blue-600 hover:bg-blue-700 text-white"
-            }`}
-          >
+        {/* Call Button */}
+        <button
+          onClick={toggleListening}
+          className={`w-24 h-24 rounded-full transition-all duration-300 transform hover:scale-110 mb-4 ${
+            isListening
+              ? "bg-red-600 hover:bg-red-700 shadow-lg shadow-red-600/50"
+              : "bg-green-600 hover:bg-green-700 shadow-lg shadow-green-600/50"
+          }`}
+        >
+          <svg className="w-12 h-12 mx-auto text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             {isListening ? (
-              <>
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                </svg>
-                <span>End Conversation</span>
-              </>
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
             ) : (
-              <>
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
-                </svg>
-                <span>Start Conversation</span>
-              </>
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z" />
             )}
-          </button>
+          </svg>
+        </button>
 
-          <button className="w-full py-3 rounded-full font-medium bg-neutral-800 hover:bg-neutral-700 text-white transition-all flex items-center justify-center space-x-2">
-            <svg className="w-5 h-5 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.367 2.684 3 3 0 00-5.367-2.684z" />
-            </svg>
-            <span>Share Agent</span>
-          </button>
-        </div>
-
-        {/* Transcript Display */}
-        {transcript && (
-          <div className="mt-8 bg-neutral-900/50 rounded-3xl p-4 w-full max-w-md">
-            <div className="text-sm text-neutral-400 mb-1">You</div>
-            <div className="text-white italic">{transcript}</div>
-          </div>
-        )}
+        <p className="text-neutral-400 text-sm">
+          {isListening ? "Tap to end call" : "Tap to start call"}
+        </p>
       </div>
     </div>
   );

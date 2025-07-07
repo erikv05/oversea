@@ -20,10 +20,15 @@ function App() {
     setCurrentPage('agent-detail')
   }
 
+  const handleAgentCreated = () => {
+    // Navigate back to agents list after creation
+    setCurrentPage('agent')
+  }
+
   const renderCurrentPage = () => {
     switch (currentPage) {
       case 'create-new':
-        return <CreateNewPage />
+        return <CreateNewPage onAgentCreated={handleAgentCreated} />
       case 'agent':
         return <MyAgentsPage onNavigate={handleNavigate} onAgentSelect={handleAgentSelect} />
       case 'agent-detail':

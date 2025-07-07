@@ -8,6 +8,7 @@ from handlers.audio_stream_handler import AudioStreamHandler
 from services.gemini_service import generate_gemini_response_stream
 from services.elevenlabs_service import generate_tts_audio_fast
 from utils.helpers import timestamp
+from routes.agents import agents_db
 
 
 async def websocket_endpoint(websocket: WebSocket):
@@ -44,8 +45,9 @@ async def websocket_endpoint(websocket: WebSocket):
     audio_handler.set_interrupt_callback(handle_interrupt)
     await audio_handler.start()
     
-    # Track conversation
+    # Track conversation and agent info
     conversation = []
+    current_agent = None
     
     # Create a task to continuously check for transcripts
     async def process_transcripts():
@@ -66,6 +68,9 @@ async def websocket_endpoint(websocket: WebSocket):
                     else:
                         print(f"{timestamp()} 📝 Transcript: '{transcript}'")
                     print(f"{timestamp()} ⏱️  Starting response pipeline...")
+                    
+                    # Add user message to conversation
+                    conversation.append({"role": "user", "content": transcript})
                     
                     # Pause listening while we process the response
                     audio_handler.pause_listening()
@@ -95,7 +100,7 @@ async def websocket_endpoint(websocket: WebSocket):
                             # Track timing
                             llm_start = time.time()
                             
-                            async for text_chunk in generate_gemini_response_stream(transcript, conversation):
+                            async for text_chunk in generate_gemini_response_stream(transcript, conversation, current_agent):
                                 if gen_id != current_generation_id:
                                     raise asyncio.CancelledError()
                                 
@@ -234,6 +239,33 @@ async def websocket_endpoint(websocket: WebSocket):
                 if data.get("type") == "audio_config":
                     # Client is configuring audio settings
                     print(f"{timestamp()} ⚙️  Audio config received")
+                    
+                elif data.get("type") == "agent_config":
+                    # Client is setting agent configuration
+                    agent_id = data.get("agent_id")
+                    if agent_id and agent_id in agents_db:
+                        current_agent = agents_db[agent_id]
+                        print(f"{timestamp()} 🤖 Agent configured: {current_agent['name']}")
+                        
+                        # Send initial greeting if configured
+                        if current_agent.get("greeting"):
+                            await websocket.send_json({
+                                "type": "agent_greeting",
+                                "text": current_agent["greeting"],
+                                "timestamp": time.time()
+                            })
+                            
+                            # Generate TTS for greeting
+                            # Note: Voice selection would need to be implemented in the TTS service
+                            greeting_audio_url = await generate_tts_audio_fast(current_agent["greeting"])
+                            if greeting_audio_url:
+                                # Mark agent as speaking before sending audio
+                                audio_handler.set_agent_speaking(True)
+                                await websocket.send_json({
+                                    "type": "greeting_audio",
+                                    "audio_url": greeting_audio_url,
+                                    "timestamp": time.time()
+                                })
                     
                 elif data.get("type") == "audio_playback_complete":
                     # Frontend finished playing audio

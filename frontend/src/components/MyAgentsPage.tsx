@@ -1,13 +1,24 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { PlusIcon } from '@heroicons/react/24/outline';
 
 interface Agent {
   id: string;
   name: string;
-  agentId: string;
+  agent_id: string;
   conversations: number;
-  minutesSpoken: number;
-  knowledgeResources: number;
+  minutes_spoken: number;
+  knowledge_resources: number;
+  voice?: string;
+  speed?: string;
+  greeting?: string;
+  system_prompt?: string;
+  behavior?: string;
+  llm_model?: string;
+  custom_knowledge?: string;
+  guardrails_enabled?: boolean;
+  current_date_enabled?: boolean;
+  caller_info_enabled?: boolean;
+  timezone?: string;
 }
 
 interface MyAgentsPageProps {
@@ -16,25 +27,26 @@ interface MyAgentsPageProps {
 }
 
 const MyAgentsPage: React.FC<MyAgentsPageProps> = ({ onNavigate, onAgentSelect }) => {
-  // Sample agents data
-  const agents: Agent[] = [
-    {
-      id: '1',
-      name: 'Bozidar',
-      agentId: 'Bozidar-w_h1TK56Y0iAUA8w3RMUG',
-      conversations: 3,
-      minutesSpoken: 1.1,
-      knowledgeResources: 0
-    },
-    {
-      id: '2',
-      name: 'Untitled Agent',
-      agentId: 'Untitled-Agent-aWpxhFTF__QiioF0kffGz',
-      conversations: 2,
-      minutesSpoken: 0,
-      knowledgeResources: 0
+  const [agents, setAgents] = useState<Agent[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    fetchAgents();
+  }, []);
+
+  const fetchAgents = async () => {
+    try {
+      const response = await fetch('http://localhost:8000/api/agents/');
+      if (response.ok) {
+        const data = await response.json();
+        setAgents(data);
+      }
+    } catch (error) {
+      console.error('Error fetching agents:', error);
+    } finally {
+      setLoading(false);
     }
-  ];
+  };
 
 
   return (
@@ -52,6 +64,11 @@ const MyAgentsPage: React.FC<MyAgentsPageProps> = ({ onNavigate, onAgentSelect }
       </div>
 
       {/* Agent Cards Grid */}
+      {loading ? (
+        <div className="flex items-center justify-center h-64">
+          <div className="text-neutral-400">Loading agents...</div>
+        </div>
+      ) : (
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
         {agents.map((agent) => (
           <div key={agent.id} className="bg-neutral-900/80 rounded-3xl p-6 border border-neutral-800/30 flex flex-col">
@@ -83,7 +100,7 @@ const MyAgentsPage: React.FC<MyAgentsPageProps> = ({ onNavigate, onAgentSelect }
               <svg className="w-4 h-4 text-neutral-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z" />
               </svg>
-              <span className="text-sm text-neutral-500 font-mono truncate">{agent.agentId}</span>
+              <span className="text-sm text-neutral-500 font-mono truncate">{agent.agent_id}</span>
             </div>
 
             {/* Stats */}
@@ -99,14 +116,14 @@ const MyAgentsPage: React.FC<MyAgentsPageProps> = ({ onNavigate, onAgentSelect }
                 <svg className="w-5 h-5 text-neutral-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
                 </svg>
-                <span className="text-sm text-neutral-300">{agent.minutesSpoken} minutes spoken</span>
+                <span className="text-sm text-neutral-300">{agent.minutes_spoken.toFixed(1)} minutes spoken</span>
               </div>
               
               <div className="flex items-center space-x-3">
                 <svg className="w-5 h-5 text-neutral-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
                 </svg>
-                <span className="text-sm text-neutral-300">{agent.knowledgeResources} knowledge resources added</span>
+                <span className="text-sm text-neutral-300">{agent.knowledge_resources} knowledge resources added</span>
               </div>
             </div>
 
@@ -123,6 +140,7 @@ const MyAgentsPage: React.FC<MyAgentsPageProps> = ({ onNavigate, onAgentSelect }
           </div>
         ))}
       </div>
+      )}
     </div>
   );
 };

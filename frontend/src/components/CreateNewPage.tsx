@@ -1,7 +1,11 @@
 import React, { useState } from 'react';
 import { ChevronDownIcon } from '@heroicons/react/24/outline';
 
-const CreateNewPage: React.FC = () => {
+interface CreateNewPageProps {
+  onAgentCreated?: () => void;
+}
+
+const CreateNewPage: React.FC<CreateNewPageProps> = ({ onAgentCreated }) => {
   const [agentName, setAgentName] = useState('Untitled Agent');
   const [selectedVoice, setSelectedVoice] = useState('Vincent');
   const [selectedSpeed, setSelectedSpeed] = useState('1.0x');
@@ -64,6 +68,46 @@ const CreateNewPage: React.FC = () => {
   const getNextStepLabel = () => {
     const currentIndex = getCurrentStepIndex();
     return currentIndex < steps.length - 1 ? steps[currentIndex + 1].label : null;
+  };
+
+  const saveAgent = async () => {
+    try {
+      const agentData = {
+        name: agentName,
+        voice: selectedVoice,
+        speed: selectedSpeed,
+        greeting: agentGreeting,
+        system_prompt: agentPrompt,
+        behavior: selectedBehavior,
+        llm_model: selectedLLM,
+        custom_knowledge: customKnowledge,
+        guardrails_enabled: guardrailsEnabled,
+        current_date_enabled: currentDateEnabled,
+        caller_info_enabled: callerInfoEnabled,
+        timezone: selectedTimezone
+      };
+
+      const response = await fetch('http://localhost:8000/api/agents/', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(agentData),
+      });
+
+      if (response.ok) {
+        const newAgent = await response.json();
+        console.log('Agent created:', newAgent);
+        if (onAgentCreated) {
+          onAgentCreated();
+        }
+        // You could also navigate back to the agents list here
+      } else {
+        console.error('Failed to create agent');
+      }
+    } catch (error) {
+      console.error('Error creating agent:', error);
+    }
   };
 
   const getStepIcon = (stepId: string, isActive: boolean) => {
@@ -583,7 +627,16 @@ const CreateNewPage: React.FC = () => {
 
         {/* Fixed Navigation Buttons - Only spans main content area */}
         <div className="bg-neutral-950/80 backdrop-blur-sm border-t border-neutral-800/30 p-4">
-          <div className="flex items-center justify-end space-x-3 pr-6">
+          <div className="flex items-center justify-between px-6">
+            {/* Save Agent Button */}
+            <button 
+              onClick={saveAgent}
+              className="bg-green-600/30 hover:bg-green-600/40 border border-green-500/20 text-green-400 font-medium px-6 py-2.5 rounded-2xl transition-all duration-200"
+            >
+              Save Agent
+            </button>
+            
+            <div className="flex items-center space-x-3">
             {getPreviousStepLabel() && (
               <button 
                 onClick={goToPreviousStep}
@@ -613,6 +666,7 @@ const CreateNewPage: React.FC = () => {
                 </svg>
               </button>
             )}
+            </div>
           </div>
         </div>
       </div>
