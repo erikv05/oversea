@@ -2,7 +2,12 @@ import { useState, useEffect, useRef } from "react";
 import { AudioPlayer } from "../AudioPlayer";
 import { AudioStreamer } from "../AudioStreamer";
 
-function Agent() {
+interface AgentProps {
+  agentId?: string | null;
+  onBack?: () => void;
+}
+
+function Agent({ agentId, onBack }: AgentProps) {
   const [isListening, setIsListening] = useState(false);
   const [transcript, setTranscript] = useState("");
   const [conversation, setConversation] = useState<
@@ -10,6 +15,8 @@ function Agent() {
   >([]);
   const conversationRef = useRef<Array<{ role: string; content: string }>>([]);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [callDuration, setCallDuration] = useState(0);
+  const [conversationId] = useState("bhOBfzddFdvjBV2Mqdmc");
   const audioStreamerRef = useRef<AudioStreamer | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -19,6 +26,14 @@ function Agent() {
   const currentResponseRef = useRef("");
   const audioPlayerRef = useRef<AudioPlayer | null>(null);
   const pendingResponseRef = useRef<string | null>(null);
+  const callTimerRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Sample agent data - in real app this would come from props/API
+  const agentData = {
+    name: agentId === '1' ? 'Bozidar' : 'Untitled Agent',
+    conversations: agentId === '1' ? 4 : 2,
+    minutesSpoken: agentId === '1' ? 1.1 : 0
+  };
 
   useEffect(() => {
     // Prevent double initialization in development mode
@@ -54,13 +69,6 @@ function Agent() {
 
     wsRef.current.onerror = (error) => {
       console.error("WebSocket error:", error);
-      console.error("WebSocket readyState:", wsRef.current?.readyState);
-      console.error("Error details:", {
-        type: error.type,
-        target: error.target,
-        currentTarget: error.currentTarget,
-        eventPhase: error.eventPhase,
-      });
     };
 
     wsRef.current.onclose = (event) => {
@@ -72,9 +80,9 @@ function Agent() {
       if (!event.wasClean) {
         setTimeout(() => {
           alert(
-            "Failed to connect to the backend. Make sure the server is running on localhost:8000\n\nError code: " +
+            "Failed to connect to the backend. Make sure the server is running on localhost:8000\\n\\nError code: " +
               event.code +
-              "\nReason: " +
+              "\\nReason: " +
               (event.reason || "Unknown")
           );
         }, 100);
@@ -87,10 +95,8 @@ function Agent() {
       switch (data.type) {
         case "user_interruption":
           console.log("Backend detected user interruption:", data.text);
-          // Trigger interruption if AI is speaking
           if (isProcessingRef.current || (audioPlayerRef.current && audioPlayerRef.current.isPlaying())) {
             interruptAI();
-            // Show the interrupting text
             setTranscript(data.text);
           }
           break;
@@ -98,20 +104,16 @@ function Agent() {
         case "stream_start": {
           console.log("Stream started");
 
-          // Check if this response is still wanted
           if (!pendingResponseRef.current) {
             console.log("Response no longer needed, user continued speaking");
-            // Tell backend to cancel
             if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
               wsRef.current.send(JSON.stringify({ type: "interrupt" }));
             }
             break;
           }
 
-          // Add user message to conversation now that we're sure about it
           const userMessage = pendingResponseRef.current;
           setConversation((prev) => {
-            // Check if the last message is already this user message (avoid duplicates)
             if (
               prev.length > 0 &&
               prev[prev.length - 1].role === "user" &&
@@ -137,7 +139,6 @@ function Agent() {
         }
 
         case "text_chunk": {
-          // Update the streaming text
           currentResponseRef.current += data.text;
           setConversation((prev) => {
             const newConv = [...prev];
@@ -154,18 +155,10 @@ function Agent() {
         }
 
         case "audio_chunk": {
-          // Queue audio chunk for playback
           const audioUrl = `http://localhost:8000${data.audio_url}`;
           console.log("Received audio chunk:", audioUrl, "Text:", data.text);
-          console.log(
-            "Current state - pending:",
-            pendingResponseRef.current,
-            "processing:",
-            isProcessingRef.current
-          );
 
           if (audioPlayerRef.current) {
-            // Clear pending response once audio starts playing
             pendingResponseRef.current = null;
             audioPlayerRef.current.addToQueue(audioUrl, data.text);
           }
@@ -174,11 +167,9 @@ function Agent() {
 
         case "interim_transcript":
           {
-            // Show interim transcript
             console.log("Interim transcript received:", data.text);
             setTranscript(data.text);
             
-            // If AI is speaking and user starts talking, interrupt
             const isAudioPlaying = audioPlayerRef.current?.isPlaying() || false;
             if ((isProcessingRef.current || isAudioPlaying) && data.text.trim().length > 0) {
               console.log("User speaking (interim), interrupting AI...");
@@ -191,12 +182,9 @@ function Agent() {
           console.log("User transcript received:", data.text);
           setTranscript("");
           
-          // Don't add to conversation here - wait for stream_start
-          // Just store it as pending
           const userMessage = data.text;
           pendingResponseRef.current = userMessage;
           
-          // Send to backend for processing
           if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
             wsRef.current.send(
               JSON.stringify({
@@ -212,7 +200,6 @@ function Agent() {
         case "stream_complete": {
           console.log("Stream complete, full text:", data.full_text);
 
-          // Only update conversation if not interrupted
           if (!data.interrupted) {
             setConversation((prev) => {
               const newConv = [...prev];
@@ -226,18 +213,16 @@ function Agent() {
               return newConv;
             });
           } else {
-            // Remove both the user message and incomplete assistant message
             setConversation((prev) => {
               const newConv = [...prev];
-              // Remove assistant message
               if (
                 newConv.length > 0 &&
                 newConv[newConv.length - 1].role === "assistant"
               ) {
                 newConv.pop();
               }
-              // Remove user message if it matches the pending one
               if (
+                newConv.length > 0 &&
                 newConv.length > 0 &&
                 newConv[newConv.length - 1].role === "user" &&
                 newConv[newConv.length - 1].content ===
@@ -250,7 +235,6 @@ function Agent() {
             });
           }
 
-          // Reset processing state when stream completes
           pendingResponseRef.current = null;
           if (!audioPlayerRef.current || !audioPlayerRef.current.isPlaying()) {
             setIsProcessing(false);
@@ -260,8 +244,6 @@ function Agent() {
         }
       }
     };
-
-    // No browser speech recognition - using Google Cloud STT via backend
 
     return () => {
       console.log("Cleanup function called");
@@ -275,9 +257,29 @@ function Agent() {
       if (audioStreamer) {
         audioStreamer.stop();
       }
+      if (callTimerRef.current) {
+        clearInterval(callTimerRef.current);
+      }
       isInitialized.current = false;
     };
   }, []);
+
+  useEffect(() => {
+    if (isListening && !callTimerRef.current) {
+      callTimerRef.current = setInterval(() => {
+        setCallDuration(prev => prev + 1);
+      }, 1000);
+    } else if (!isListening && callTimerRef.current) {
+      clearInterval(callTimerRef.current);
+      callTimerRef.current = null;
+    }
+
+    return () => {
+      if (callTimerRef.current) {
+        clearInterval(callTimerRef.current);
+      }
+    };
+  }, [isListening]);
 
   const startListening = async () => {
     if (audioStreamerRef.current) {
@@ -302,7 +304,6 @@ function Agent() {
       audioRef.current.pause();
       audioRef.current = null;
     }
-    // Stop audio player
     if (audioPlayerRef.current) {
       audioPlayerRef.current.stop();
     }
@@ -311,12 +312,10 @@ function Agent() {
   const interruptAI = () => {
     console.log("Interrupting AI...");
 
-    // Stop current audio
     if (audioPlayerRef.current) {
       audioPlayerRef.current.stop();
     }
 
-    // Cancel current LLM generation
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
       wsRef.current.send(
         JSON.stringify({
@@ -325,26 +324,20 @@ function Agent() {
       );
     }
 
-    // Clear pending response
     pendingResponseRef.current = null;
-
-    // Reset states
     setIsProcessing(false);
     isProcessingRef.current = false;
-
-    // Clear transcript
     setTranscript("");
   };
 
   const toggleListening = () => {
     if (isListening) {
-      // Turn off - stop everything
       setIsListening(false);
       isListeningRef.current = false;
       stopListening();
       setTranscript("");
+      setCallDuration(0);
 
-      // Stop any ongoing audio and clear queue
       if (audioRef.current) {
         audioRef.current.pause();
         audioRef.current = null;
@@ -353,11 +346,9 @@ function Agent() {
         audioPlayerRef.current.stop();
       }
     } else {
-      // Turn on - start continuous conversation
       setIsListening(true);
       isListeningRef.current = true;
 
-      // Unlock audio player on user interaction
       if (audioPlayerRef.current) {
         audioPlayerRef.current.unlock();
       }
@@ -366,61 +357,159 @@ function Agent() {
     }
   };
 
+  const formatTime = (seconds: number) => {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins}:${secs.toString().padStart(2, '0')}`;
+  };
+
+  const AudioWaveform = () => (
+    <div className="flex items-center justify-center space-x-1 h-16">
+      {[...Array(20)].map((_, i) => (
+        <div
+          key={i}
+          className={`w-1 bg-gradient-to-t from-blue-600 to-blue-400 rounded-full animate-pulse ${
+            isListening ? 'opacity-100' : 'opacity-30'
+          }`}
+          style={{
+            height: `${Math.random() * 40 + 8}px`,
+            animationDelay: `${i * 0.1}s`,
+            animationDuration: isListening ? `${0.5 + Math.random() * 0.5}s` : '1s'
+          }}
+        />
+      ))}
+    </div>
+  );
+
   return (
     <div className="flex flex-col h-full bg-black text-white">
-      <div className="border-b border-neutral-800 p-6">
-        <h2 className="text-2xl font-semibold">Voice Agent</h2>
+      {/* Header */}
+      <div className="flex items-center justify-between p-6 border-b border-neutral-800">
+        <button 
+          onClick={onBack}
+          className="flex items-center space-x-2 text-neutral-400 hover:text-white transition-colors"
+        >
+          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+          </svg>
+          <span>Back to Agents</span>
+        </button>
+        <h1 className="text-sm font-medium text-neutral-400 tracking-wider uppercase">
+          Voice Agent in Conversation
+        </h1>
+        <div className="w-32" /> {/* Spacer for centering */}
       </div>
 
-      <div className="flex-1 overflow-y-auto p-6">
-        <div className="space-y-4 max-w-4xl mx-auto">
-          {conversation.map((msg, idx) => (
-            <div
-              key={idx}
-              className={`flex ${
-                msg.role === "user" ? "justify-end" : "justify-start"
-              }`}
-            >
-              <div
-                className={`max-w-[70%] rounded-lg p-4 ${
-                  msg.role === "user"
-                    ? "bg-neutral-700 text-white"
-                    : "bg-neutral-800 text-neutral-100"
-                }`}
-              >
-                <div className="font-medium mb-1 text-sm opacity-75">
-                  {msg.role === "user" ? "You" : "Agent"}
-                </div>
-                <div>{msg.content}</div>
-              </div>
+      {/* Main Content */}
+      <div className="flex-1 flex flex-col items-center justify-center px-6 py-12">
+        
+        {/* Agent Card */}
+        <div className="bg-neutral-900/80 rounded-3xl p-6 border border-neutral-800/30 mb-8 w-full max-w-md">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-2xl font-medium text-white">{agentData.name}</h2>
+            <div className="flex items-center space-x-2">
+              <button className="flex items-center space-x-1.5 px-3 py-1.5 bg-blue-600/20 hover:bg-blue-600/30 border border-blue-500/20 rounded-full transition-colors text-sm">
+                <svg className="w-4 h-4 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.367 2.684 3 3 0 00-5.367-2.684z" />
+                </svg>
+                <span className="text-blue-400">Share Agent</span>
+              </button>
+              <button className="p-2 hover:bg-neutral-800 rounded-full transition-colors">
+                <svg className="w-5 h-5 text-neutral-400" fill="none" viewBox="0 0 24 24">
+                  <circle cx="5" cy="12" r="2" fill="currentColor" />
+                  <circle cx="12" cy="12" r="2" fill="currentColor" />
+                  <circle cx="19" cy="12" r="2" fill="currentColor" />
+                </svg>
+              </button>
             </div>
-          ))}
-          {transcript && (
-            <div className="flex justify-end">
-              <div className="max-w-[70%] rounded-lg p-4 bg-neutral-700/50 text-white">
-                <div className="font-medium mb-1 text-sm opacity-75">You</div>
-                <div className="italic">{transcript}</div>
-              </div>
+          </div>
+          
+          <div className="flex items-center space-x-6 text-sm text-neutral-400">
+            <div className="flex items-center space-x-2">
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+              </svg>
+              <span>{agentData.conversations} conversations</span>
             </div>
+            <div className="flex items-center space-x-2">
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+              <span>{agentData.minutesSpoken} minutes spoken</span>
+            </div>
+          </div>
+        </div>
+
+        {/* Conversation ID */}
+        <div className="bg-neutral-900/50 rounded-3xl px-4 py-3 mb-8">
+          <div className="text-sm text-neutral-400 mb-1">Conversation ID</div>
+          <div className="text-sm font-mono text-neutral-300">{conversationId}</div>
+        </div>
+
+        {/* Audio Waveform */}
+        <div className="mb-8">
+          <AudioWaveform />
+        </div>
+
+        {/* Status */}
+        <div className="flex items-center space-x-2 mb-2">
+          {isListening && (
+            <>
+              <div className="w-3 h-3 bg-blue-400 rounded-full animate-pulse" />
+              <span className="text-sm text-neutral-300">listening...</span>
+            </>
           )}
         </div>
-      </div>
 
-      <div className="border-t border-neutral-800 p-6 flex flex-col items-center space-y-4">
-        <button
-          className={`w-20 h-20 rounded-full flex items-center justify-center text-3xl transition-all ${
-            isListening
-              ? "bg-red-600 hover:bg-red-700 animate-pulse"
-              : "bg-green-600 hover:bg-green-700"
-          }`}
-          onClick={toggleListening}
-        >
-          {isListening ? "📞" : "☎️"}
-        </button>
+        {/* Timer */}
+        {isListening && (
+          <div className="text-2xl font-mono text-white mb-8">
+            {formatTime(callDuration)}
+          </div>
+        )}
 
-        <p className="text-neutral-400 text-sm">
-          {isListening ? "On call - Click to end" : "Click to start call"}
-        </p>
+        {/* Action Buttons */}
+        <div className="flex flex-col space-y-4 w-full max-w-md">
+          <button
+            onClick={toggleListening}
+            className={`w-full py-3 rounded-full font-medium transition-all flex items-center justify-center space-x-2 ${
+              isListening
+                ? "bg-red-600 hover:bg-red-700 text-white"
+                : "bg-blue-600 hover:bg-blue-700 text-white"
+            }`}
+          >
+            {isListening ? (
+              <>
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+                <span>End Conversation</span>
+              </>
+            ) : (
+              <>
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
+                </svg>
+                <span>Start Conversation</span>
+              </>
+            )}
+          </button>
+
+          <button className="w-full py-3 rounded-full font-medium bg-neutral-800 hover:bg-neutral-700 text-white transition-all flex items-center justify-center space-x-2">
+            <svg className="w-5 h-5 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.367 2.684 3 3 0 00-5.367-2.684z" />
+            </svg>
+            <span>Share Agent</span>
+          </button>
+        </div>
+
+        {/* Transcript Display */}
+        {transcript && (
+          <div className="mt-8 bg-neutral-900/50 rounded-3xl p-4 w-full max-w-md">
+            <div className="text-sm text-neutral-400 mb-1">You</div>
+            <div className="text-white italic">{transcript}</div>
+          </div>
+        )}
       </div>
     </div>
   );
