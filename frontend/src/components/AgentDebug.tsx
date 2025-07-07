@@ -48,6 +48,13 @@ function AgentDebug() {
       console.log(`${timestamp()} ✓ All audio finished playing`);
       setIsProcessing(false);
       isProcessingRef.current = false;
+      
+      // Notify backend that audio playback is complete
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        wsRef.current.send(JSON.stringify({
+          type: "audio_playback_complete"
+        }));
+      }
     });
 
     // Initialize WebSocket connection
@@ -88,6 +95,14 @@ function AgentDebug() {
       const data = JSON.parse(event.data);
 
       switch (data.type) {
+        case "stop_audio_immediately":
+          console.log(`${timestamp()} 🛑 Backend detected voice activity - stopping audio immediately`);
+          // Immediately stop audio playback
+          if (audioPlayerRef.current) {
+            audioPlayerRef.current.stop();
+          }
+          break;
+          
         case "speech_start":
           console.log(`${timestamp()} 🎤 Speech started`);
           performanceRef.current.speechStart = data.timestamp || performance.now() / 1000;
@@ -206,12 +221,8 @@ function AgentDebug() {
             // Show interim transcript
             setTranscript(data.text);
             
-            // If AI is speaking and user starts talking, interrupt
-            const isAudioPlaying = audioPlayerRef.current?.isPlaying() || false;
-            if ((isProcessingRef.current || isAudioPlaying) && data.text.trim().length > 0) {
-              console.log(`${timestamp()} 🗣️  User speaking (interim), interrupting AI`);
-              interruptAI();
-            }
+            // Remove frontend interruption - rely only on backend WebRTC VAD
+            // Backend will send stop_audio_immediately when it detects actual speech
             break;
           }
 

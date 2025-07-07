@@ -35,6 +35,13 @@ function App() {
       isProcessingRef.current = false
       setIsAgentSpeaking(false)
       console.log('[FRONTEND] Agent speaking complete, ready for user input')
+      
+      // Notify backend that audio playback is complete
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        wsRef.current.send(JSON.stringify({
+          type: "audio_playback_complete"
+        }))
+      }
     })
     
     // Initialize WebSocket connection
@@ -58,10 +65,7 @@ function App() {
         alert('Failed to initialize audio streaming. Please check microphone permissions.')
       }
 
-      audioStreamerRef.current.setOnVoiceActivity(() => {
-        console.log('[FRONTEND] Voice activity detected, interrupting AI...')
-        interruptAI()
-      })
+      // Remove frontend VAD - rely only on backend WebRTC VAD
     }
     
     wsRef.current.onerror = (error) => {
@@ -85,6 +89,14 @@ function App() {
       const data = JSON.parse(event.data)
       
       switch (data.type) {
+        case 'stop_audio_immediately':
+          console.log('[FRONTEND] Backend detected voice activity - stopping audio immediately')
+          // Immediately stop audio playback
+          if (audioPlayerRef.current) {
+            audioPlayerRef.current.stop()
+          }
+          break
+          
         case 'interim_transcript': {
           // Show interim transcript
           console.log('[FRONTEND] Received interim_transcript:', data.text)

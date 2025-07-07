@@ -224,6 +224,11 @@ async def websocket_endpoint(websocket: WebSocket):
                     # Client is configuring audio settings
                     print(f"{timestamp()} ⚙️  Audio config received")
                     
+                elif data.get("type") == "audio_playback_complete":
+                    # Frontend finished playing audio
+                    print(f"{timestamp()} 🔇 Audio playback complete")
+                    audio_handler.set_agent_speaking(False)
+                    
                 elif data.get("type") == "interrupt":
                     # Cancel all active tasks
                     reason = data.get("reason", "unknown")

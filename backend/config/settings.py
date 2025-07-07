@@ -25,11 +25,6 @@ CORS_ORIGINS = ["http://localhost:5173"]  # Vite default port
 
 # Voice Activity Detection Parameters
 VAD_CONFIG = {
-    "energy_threshold": 400,
-    "speech_start_frames": 5,  # 50ms
-    "speech_prefetch_frames": 20,  # 200ms
-    "speech_confirm_frames": 80,  # 800ms
-    "frame_size": 160,  # 10ms frames at 8kHz
     "min_speech_duration": 3200,  # 400ms
     "pre_speech_buffer_size": 3200,  # 200ms
 }
