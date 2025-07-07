@@ -50,8 +50,8 @@ async def generate_gemini_response_stream(user_message: str, conversation: list)
                     
                     # Clean up any "Assistant:" prefix from first chunk
                     cleaned_text = chunk.text
-                    if cleaned_text.strip().startswith("Assistant:"):
-                        cleaned_text = cleaned_text.replace("Assistant:", "", 1).lstrip()
+                    if cleaned_text.strip().lower().startswith("assistant:"):
+                        cleaned_text = cleaned_text[cleaned_text.lower().find("assistant:") + 10:].lstrip()
                     
                     buffer += cleaned_text
                     char_count += len(cleaned_text)

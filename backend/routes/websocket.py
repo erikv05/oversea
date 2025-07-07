@@ -18,11 +18,24 @@ async def websocket_endpoint(websocket: WebSocket):
     # Initialize audio stream handler with current event loop
     loop = asyncio.get_event_loop()
     audio_handler = AudioStreamHandler(websocket, loop)
-    await audio_handler.start()
     
     # Track active generation tasks
     active_tasks = set()
     current_generation_id = 0
+    
+    # Define interrupt handler
+    async def handle_interrupt():
+        nonlocal current_generation_id
+        print(f"{timestamp()} 🛑 Voice activity interrupt - cancelling {len(active_tasks)} tasks")
+        for task in active_tasks:
+            if not task.done():
+                task.cancel()
+        active_tasks.clear()
+        current_generation_id += 1  # Increment ID to invalidate old responses
+    
+    # Set the interrupt callback
+    audio_handler.set_interrupt_callback(handle_interrupt)
+    await audio_handler.start()
     
     # Track conversation
     conversation = []
@@ -104,6 +117,8 @@ async def websocket_endpoint(websocket: WebSocket):
                                     first_audio_time = time.time() - response_pipeline_start
                                     print(f"{timestamp()} 🎉 First audio ready in {first_audio_time:.2f}s from user stop")
                                     
+                                    # Mark that agent is speaking
+                                    audio_handler.set_agent_speaking(True)
                                     await websocket.send_json({
                                         "type": "audio_chunk",
                                         "audio_url": audio_url,
@@ -117,6 +132,8 @@ async def websocket_endpoint(websocket: WebSocket):
                                 print(f"{timestamp()} 🔊 TTS: Generating remaining audio")
                                 remaining_audio_url = await generate_tts_audio_fast(remaining_text)
                                 if remaining_audio_url:
+                                    # Mark that agent is speaking (in case first chunk didn't exist)
+                                    audio_handler.set_agent_speaking(True)
                                     await websocket.send_json({
                                         "type": "audio_chunk",
                                         "audio_url": remaining_audio_url,
@@ -209,7 +226,8 @@ async def websocket_endpoint(websocket: WebSocket):
                     
                 elif data.get("type") == "interrupt":
                     # Cancel all active tasks
-                    print(f"{timestamp()} 🛑 Interruption - cancelling {len(active_tasks)} tasks")
+                    reason = data.get("reason", "unknown")
+                    print(f"{timestamp()} 🛑 Interruption ({reason}) - cancelling {len(active_tasks)} tasks")
                     for task in active_tasks:
                         if not task.done():
                             task.cancel()
