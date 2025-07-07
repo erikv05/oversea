@@ -90,6 +90,7 @@ async def websocket_endpoint(websocket: WebSocket):
                             full_response = ""
                             first_sentence = ""
                             first_tts_task = None
+                            first_audio_time = None  # Initialize to avoid UnboundLocalError
                             
                             # Track timing
                             llm_start = time.time()
@@ -164,10 +165,8 @@ async def websocket_endpoint(websocket: WebSocket):
                             total_time = time.time() - response_pipeline_start
                             print(f"{timestamp()} ✅ Response pipeline complete in {total_time:.2f}s")
                             
-                            # Calculate actual user-perceived delay
-                            if audio_handler.speech_start_time:
-                                user_perceived_delay = time.time() - audio_handler.speech_start_time
-                                speech_to_audio_delay = first_audio_time
+                            # Calculate actual user-perceived delay - only if we have audio timing
+                            if audio_handler.speech_start_time and first_audio_time is not None:
                                 print(f"{timestamp()} 📊 Timing Breakdown:")
                                 print(f"    • Speech duration: {(response_pipeline_start - audio_handler.speech_start_time):.2f}s")
                                 print(f"    • VAD prefetch @ 200ms, confirm @ 800ms")  
@@ -175,12 +174,14 @@ async def websocket_endpoint(websocket: WebSocket):
                                 print(f"    • LLM first token: {(llm_start - response_pipeline_start):.2f}s")
                                 print(f"    • TTS generation: {(first_audio_time - (llm_start - response_pipeline_start)):.2f}s")
                                 print(f"    • 🎯 Total delay (speech end → audio): {first_audio_time:.2f}s\n")
-                            else:
+                            elif first_audio_time is not None:
                                 print(f"{timestamp()} 📊 Standard Breakdown:")
                                 print(f"    • VAD + Whisper: ~0.8s (speculative)")
                                 print(f"    • LLM first token: {(llm_start - response_pipeline_start):.2f}s")
                                 print(f"    • TTS generation: {(first_audio_time - (llm_start - response_pipeline_start)):.2f}s")
                                 print(f"    • Total: {total_time:.2f}s\n")
+                            else:
+                                print(f"{timestamp()} 📊 No audio generated - text-only response ({total_time:.2f}s)\n")
                             
                             # Resume listening for user input
                             audio_handler.resume_listening()

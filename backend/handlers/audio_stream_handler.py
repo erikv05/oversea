@@ -23,8 +23,8 @@ class AudioStreamHandler:
         
         # Initialize WebRTC VAD
         self.vad = webrtcvad.Vad()
-        # Set aggressiveness mode (0-3, where 3 is most aggressive)
-        # Mode 3 is most aggressive at filtering out non-speech sounds
+        # Use mode 3 for maximum aggressiveness in filtering non-speech sounds
+        # Combined with our voice detection, this provides robust filtering
         self.vad.set_mode(3)
         
         # Voice Activity Detection parameters
@@ -32,6 +32,10 @@ class AudioStreamHandler:
         self.is_speaking = False
         self.silence_counter = 0
         self.speech_counter = 0
+        
+        # Enhanced voice detection for interruption
+        self.interruption_speech_counter = 0  # Separate counter for interruption detection
+        self.min_interruption_frames = 8  # 240ms of voice-like audio (8 * 30ms) - increased for robustness
         
         # Pre-speech circular buffer
         self.pre_speech_buffer_size = VAD_CONFIG["pre_speech_buffer_size"]
@@ -108,38 +112,53 @@ class AudioStreamHandler:
             
             # Voice Activity Detection logic using WebRTC VAD
             if is_speech:
-                # --- IMMEDIATE INTERRUPTION --- 
-                # If agent is speaking, interrupt immediately on any speech detection
+                # Enhanced voice detection for interruption
+                is_voice_like = self._is_voice_like(frame)
+                
+                # --- INTERRUPTION DETECTION ---
                 if self.is_agent_speaking and not self.is_interrupting:
-                    self.is_interrupting = True
-                    print(f"{timestamp()} 🛑 User started speaking while agent is active - interrupting")
-                    print(f"{timestamp()} 📤 Sending stop_audio_immediately message to frontend")
-                    
-                    # Send message to stop audio playback on the frontend
-                    await self.websocket.send_json({
-                        "type": "stop_audio_immediately", 
-                        "timestamp": time.time()
-                    })
-                    
-                    # Cancel backend tasks
-                    if self.interrupt_callback:
-                        await self.interrupt_callback()
+                    if is_voice_like:
+                        # Voice-like audio detected, increment counter
+                        self.interruption_speech_counter += 1
+                        if self.interruption_speech_counter <= 3:  # Only log first few frames to avoid spam
+                            print(f"{timestamp()} 🎤 Voice-like audio detected ({self.interruption_speech_counter}/{self.min_interruption_frames})")
+                        
+                        # Only interrupt after minimum voice-like duration
+                        if self.interruption_speech_counter >= self.min_interruption_frames:
+                            self.is_interrupting = True
+                            print(f"{timestamp()} 🛑 CONFIRMED voice activity - interrupting agent")
+                            print(f"{timestamp()} 📤 Sending stop_audio_immediately message to frontend")
+                            
+                            # Send message to stop audio playback on the frontend
+                            await self.websocket.send_json({
+                                "type": "stop_audio_immediately", 
+                                "timestamp": time.time()
+                            })
+                            
+                            # Cancel backend tasks
+                            if self.interrupt_callback:
+                                await self.interrupt_callback()
 
-                    # Notify frontend of the interruption
-                    await self.websocket.send_json({
-                        "type": "user_interruption",
-                        "timestamp": time.time()
-                    })
-                    
-                    # CRITICAL: Resume listening immediately so interrupting speech can be processed as new query
-                    self.is_listening_for_user = True
-                    print(f"{timestamp()} ▶️  Listening to interrupting speech (will process as new query)")
+                            # Notify frontend of the interruption
+                            await self.websocket.send_json({
+                                "type": "user_interruption",
+                                "timestamp": time.time()
+                            })
+                            
+                            # CRITICAL: Resume listening immediately so interrupting speech can be processed as new query
+                            self.is_listening_for_user = True
+                            print(f"{timestamp()} ▶️  Listening to interrupting speech (will process as new query)")
+                    else:
+                        # Not voice-like (could be banging, clicking, etc.), reset counter
+                        if self.interruption_speech_counter > 0:
+                            print(f"{timestamp()} 🔇 Non-voice audio detected (banging/clicking?) - resetting interruption counter")
+                        self.interruption_speech_counter = 0
                 elif self.is_agent_speaking and self.is_interrupting:
-                    # Already interrupting, just continue
+                    # Already interrupting, continue processing
                     pass
                 elif not self.is_agent_speaking:
-                    # Normal speech while agent is not speaking - continue to regular detection
-                    pass
+                    # Reset interruption counter when agent not speaking
+                    self.interruption_speech_counter = 0
                 else:
                     print(f"{timestamp()} 🔍 DEBUG: Speech detected but no interruption (agent_speaking={self.is_agent_speaking}, interrupting={self.is_interrupting})")
 
@@ -178,7 +197,11 @@ class AudioStreamHandler:
                     # Add frame to speech buffer
                     self.speech_buffer.extend(frame)
             else:
-                # Silence detected
+                # Silence detected - reset interruption counter
+                if self.interruption_speech_counter > 0:
+                    print(f"{timestamp()} 🔇 Silence detected - resetting interruption counter ({self.interruption_speech_counter} frames)")
+                self.interruption_speech_counter = 0
+                
                 self.silence_counter += 1
                 self.speech_counter = 0
                 
@@ -246,6 +269,82 @@ class AudioStreamHandler:
             # Remove oldest data
             self.pre_speech_buffer = self.pre_speech_buffer[-self.pre_speech_buffer_size:]
     
+    def _is_voice_like(self, frame: bytes) -> bool:
+        """Enhanced voice detection using frequency analysis and energy patterns"""
+        import numpy as np
+        
+        try:
+            # Convert bytes to numpy array
+            audio_data = np.frombuffer(frame, dtype=np.int16).astype(np.float32)
+            
+            # 1. Energy checks - voice should have moderate energy levels
+            energy = np.mean(audio_data ** 2)
+            if energy < 500:  # Increased minimum threshold to filter out quiet background noise
+                return False
+            if energy > 50000000:  # Too loud for normal voice
+                return False
+            
+            # 2. Check for reasonable amplitude range (voice is usually not clipping)
+            max_amplitude = np.max(np.abs(audio_data))
+            if max_amplitude > 28000:  # Close to clipping, likely not voice
+                return False
+            
+            # 3. Zero-crossing rate - voice has moderate ZCR, not too high (like fricatives) or too low (like tones)
+            zero_crossings = np.sum(np.diff(np.sign(audio_data)) != 0)
+            zcr = zero_crossings / len(audio_data)
+            if zcr < 0.02 or zcr > 0.4:  # Voice typically has ZCR between 0.02-0.4
+                return False
+            
+            # 4. Frequency analysis using FFT
+            fft = np.fft.rfft(audio_data)
+            freqs = np.fft.rfftfreq(len(audio_data), 1/8000)
+            magnitude = np.abs(fft)
+            
+            # Voice frequency bands
+            # Fundamental frequency range (85-255Hz for adult voices)
+            fundamental = np.sum(magnitude[(freqs >= 85) & (freqs <= 255)])
+            # First formant range (300-900Hz)
+            formant1 = np.sum(magnitude[(freqs >= 300) & (freqs <= 900)])
+            # Second formant range (900-2500Hz)
+            formant2 = np.sum(magnitude[(freqs >= 900) & (freqs <= 2500)])
+            # Higher formants (2500-3400Hz)
+            formant3 = np.sum(magnitude[(freqs >= 2500) & (freqs <= 3400)])
+            
+            total_energy = np.sum(magnitude)
+            if total_energy == 0:
+                return False
+            
+            # Calculate ratios
+            voice_energy = fundamental + formant1 + formant2 + formant3
+            voice_ratio = voice_energy / total_energy
+            
+            # Check for too much high-frequency content (clicking, banging)
+            high_freq_energy = np.sum(magnitude[freqs > 3400])
+            high_freq_ratio = high_freq_energy / total_energy
+            
+            # Check for too much very low frequency content (rumbling, thumps)
+            low_freq_energy = np.sum(magnitude[freqs < 85])
+            low_freq_ratio = low_freq_energy / total_energy
+            
+            # 5. Spectral centroid - voice typically has centroid in mid-range
+            spectral_centroid = np.sum(freqs * magnitude) / total_energy if total_energy > 0 else 0
+            
+            # Voice characteristics:
+            # - At least 40% energy in voice frequencies (increased from 30%)
+            # - Less than 40% energy in high frequencies (reduced from 60%)
+            # - Less than 30% energy in very low frequencies
+            # - Spectral centroid between 500-2500 Hz
+            is_voice = (voice_ratio > 0.4 and 
+                       high_freq_ratio < 0.4 and 
+                       low_freq_ratio < 0.3 and
+                       500 < spectral_centroid < 2500)
+            
+            return is_voice
+            
+        except Exception as e:
+            print(f"{timestamp()} ⚠️  Voice detection error: {e}")
+            # Fallback - be conservative and assume not voice to avoid false positives
+            return False
     
     async def _process_speech_segment(self, audio_data: bytes):
         """Process a complete speech segment with Whisper"""
