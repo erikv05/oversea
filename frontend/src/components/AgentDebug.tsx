@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { AudioPlayer } from "../AudioPlayer";
 import { AudioStreamer } from "../AudioStreamer";
-import { WS_URL } from "../config";
+import { WS_URL, API_URL } from "../config";
 
 // Timing helper
 const timestamp = () => `[${(performance.now() / 1000).toFixed(3)}]`;
@@ -196,7 +196,7 @@ function AgentDebug() {
           }
           
           // Queue audio chunk for playback
-          const audioUrl = `http://localhost:8000${data.audio_url}`;
+          const audioUrl = `${API_URL}${data.audio_url}`;
           console.log(`${timestamp()} 🎵 Audio chunk received: "${data.text.substring(0, 30)}..."`);
 
           if (audioPlayerRef.current) {

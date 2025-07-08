@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { ChevronDownIcon } from '@heroicons/react/24/outline';
+import { API_URL } from '../config';
 
 interface CreateNewPageProps {
   onAgentCreated?: () => void;
@@ -87,7 +88,7 @@ const CreateNewPage: React.FC<CreateNewPageProps> = ({ onAgentCreated }) => {
         timezone: selectedTimezone
       };
 
-      const response = await fetch('http://localhost:8000/api/agents/', {
+      const response = await fetch(`${API_URL}/api/agents/`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

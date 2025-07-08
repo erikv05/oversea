@@ -21,7 +21,7 @@ AUDIO_DIR = Path("temp_audio")
 AUDIO_DIR.mkdir(exist_ok=True)
 
 # Server Configuration
-CORS_ORIGINS = ["http://localhost:5173"]  # Vite default port
+CORS_ORIGINS = ["*"]  # Allow all origins (not secure, but as requested)
 
 # Voice Activity Detection Parameters
 VAD_CONFIG = {

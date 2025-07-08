@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { AudioPlayer } from "../AudioPlayer";
 import { AudioStreamer } from "../AudioStreamer";
-import { WS_URL } from "../config";
+import { WS_URL, API_URL } from "../config";
 
 interface AgentProps {
   agentId?: string | null;
@@ -42,7 +42,7 @@ function Agent({ agentId, onBack }: AgentProps) {
     if (!agentId) return;
     
     try {
-      const response = await fetch(`http://localhost:8000/api/agents/${agentId}`);
+      const response = await fetch(`${API_URL}/api/agents/${agentId}`);
       if (response.ok) {
         const data = await response.json();
         setAgentData(data);
@@ -145,7 +145,7 @@ function Agent({ agentId, onBack }: AgentProps) {
           console.log("Greeting audio received:", data.audio_url);
           // Play greeting audio
           if (audioPlayerRef.current) {
-            const audioUrl = `http://localhost:8000${data.audio_url}`;
+            const audioUrl = `${API_URL}${data.audio_url}`;
             audioPlayerRef.current.addToQueue(audioUrl, data.text || "");
           }
           break;
@@ -216,7 +216,7 @@ function Agent({ agentId, onBack }: AgentProps) {
           
         case "audio_chunk": {
           // Queue audio chunk for playback
-          const audioUrl = `http://localhost:8000${data.audio_url}`;
+          const audioUrl = `${API_URL}${data.audio_url}`;
           console.log("[FRONTEND] Received audio_chunk:", audioUrl, "text:", data.text);
           
           if (audioPlayerRef.current) {

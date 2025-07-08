@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { PlusIcon } from '@heroicons/react/24/outline';
+import { API_URL } from '../config';
 
 interface Agent {
   id: string;
@@ -36,7 +37,7 @@ const MyAgentsPage: React.FC<MyAgentsPageProps> = ({ onNavigate, onAgentSelect }
 
   const fetchAgents = async () => {
     try {
-      const response = await fetch('http://localhost:8000/api/agents/');
+      const response = await fetch(`${API_URL}/api/agents/`);
       if (response.ok) {
         const data = await response.json();
         setAgents(data);
