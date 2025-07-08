@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+websockets
+pydantic
+python-multipart
+aiofiles
+httpx
+python-jose[cryptography]
+passlib[bcrypt]
+python-dotenv

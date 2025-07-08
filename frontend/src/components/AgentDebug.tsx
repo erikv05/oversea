@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { AudioPlayer } from "../AudioPlayer";
 import { AudioStreamer } from "../AudioStreamer";
+import { WS_URL } from "../config";
 
 // Timing helper
 const timestamp = () => `[${(performance.now() / 1000).toFixed(3)}]`;
@@ -61,7 +62,7 @@ function AgentDebug() {
     console.log(`${timestamp()} 🔌 Connecting to WebSocket...`);
 
     try {
-      wsRef.current = new WebSocket("ws://localhost:8000/ws");
+      wsRef.current = new WebSocket(WS_URL);
     } catch (error) {
       console.error(`${timestamp()} ❌ Failed to create WebSocket:`, error);
       alert("Failed to create WebSocket connection: " + error);
