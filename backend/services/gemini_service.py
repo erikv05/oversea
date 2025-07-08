@@ -69,25 +69,44 @@ async def generate_gemini_response_stream(user_message: str, conversation: list,
         first_token_time = None
         buffer = ""
         char_count = 0
+        prefix_buffer = ""  # Buffer to check for "Assistant:" prefix
+        prefix_cleaned = False
         
         for chunk in response:
             if chunk.text:
                 if first_token_time is None:
                     first_token_time = time.time() - start_time
                     print(f"{timestamp()} ✓ LLM: First token in {first_token_time:.2f}s")
+                
+                # Add to prefix buffer if we haven't cleaned the prefix yet
+                if not prefix_cleaned:
+                    prefix_buffer += chunk.text
                     
-                    # Clean up any "Assistant:" prefix from first chunk
-                    cleaned_text = chunk.text
-                    if cleaned_text.strip().lower().startswith("assistant:"):
-                        cleaned_text = cleaned_text[cleaned_text.lower().find("assistant:") + 10:].lstrip()
-                    
-                    buffer += cleaned_text
-                    char_count += len(cleaned_text)
-                    yield cleaned_text
+                    # Check if we have enough content to detect "Assistant:" prefix
+                    if len(prefix_buffer) >= 15 or "\n" in prefix_buffer:
+                        # Clean up any "Assistant:" prefix
+                        cleaned_text = prefix_buffer
+                        if cleaned_text.strip().lower().startswith("assistant:"):
+                            cleaned_text = cleaned_text[cleaned_text.lower().find("assistant:") + 10:].lstrip()
+                        
+                        prefix_cleaned = True
+                        buffer += cleaned_text
+                        char_count += len(cleaned_text)
+                        yield cleaned_text
                 else:
+                    # Normal processing after prefix is handled
                     buffer += chunk.text
                     char_count += len(chunk.text)
                     yield chunk.text
+        
+        # Handle any remaining prefix buffer content
+        if not prefix_cleaned and prefix_buffer:
+            cleaned_text = prefix_buffer
+            if cleaned_text.strip().lower().startswith("assistant:"):
+                cleaned_text = cleaned_text[cleaned_text.lower().find("assistant:") + 10:].lstrip()
+            buffer += cleaned_text
+            char_count += len(cleaned_text)
+            yield cleaned_text
         
         total_time = time.time() - start_time
         print(f"{timestamp()} ✓ LLM: Complete ({char_count} chars in {total_time:.2f}s)")
