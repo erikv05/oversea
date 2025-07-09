@@ -48,7 +48,7 @@ class AudioStreamHandler:
         
         # Adjusted thresholds for WebRTC VAD
         self.speech_start_frames = 2  # 60ms of speech to start (2 * 30ms)
-        self.speech_prefetch_frames = 7  # ~200ms of silence (7 * 30ms)
+        self.speech_prefetch_frames = 17  # ~500ms of silence (17 * 30ms) - less aggressive
         self.speech_confirm_frames = 27  # ~800ms of silence (27 * 30ms)
         
         # Minimum speech duration
@@ -234,8 +234,25 @@ class AudioStreamHandler:
                     # Continue adding to buffer during short pauses
                     self.speech_buffer.extend(frame)
                     
-                    # With streaming, we don't need the 200ms prefetch anymore
-                    # The transcript is already being processed in real-time
+                    # Stream audio to Deepgram
+                    if self.is_streaming and self.streaming_transcriber:
+                        await self.streaming_transcriber.send_audio(frame)
+                    
+                    # SPECULATIVE PROCESSING: Start prefetch after ~200ms silence
+                    if self.silence_counter >= self.speech_prefetch_frames and not self.is_speculating:
+                        # Get current interim transcript for speculative processing
+                        if self.is_streaming and self.streaming_transcriber:
+                            interim_transcript = self.streaming_transcriber.get_current_transcript()
+                            if interim_transcript and self.is_listening_for_user:
+                                print(f"{timestamp()} 🚀 Starting speculative processing (~200ms silence)")
+                                print(f"{timestamp()} 📝 Interim transcript: '{interim_transcript}'")
+                                self.is_speculating = True
+                                self.speculative_transcript = interim_transcript
+                                
+                                # Start speculative processing task
+                                self.speculative_task = asyncio.create_task(
+                                    self._speculative_process(interim_transcript)
+                                )
                     
                     # Confirm speech ended after ~800ms total silence
                     if self.silence_counter >= self.speech_confirm_frames:
@@ -258,6 +275,11 @@ class AudioStreamHandler:
                                 
                                 if final_transcript:
                                     print(f"{timestamp()} 🎯 Final streaming transcript: '{final_transcript}'")
+                                    
+                                    # Cancel any ongoing speculation if transcript changed
+                                    if self.is_speculating and self.speculative_task and not self.speculative_task.done():
+                                        self.speculative_task.cancel()
+                                    
                                     await self._commit_transcript(final_transcript)
                                 else:
                                     print(f"{timestamp()} ⚠️  No streaming transcript received")
@@ -379,7 +401,7 @@ class AudioStreamHandler:
     
     
     async def _commit_transcript(self, transcript_text: str):
-        """Commit a prefetched transcript once speech is confirmed ended"""
+        """Commit a confirmed transcript once speech is confirmed ended"""
         # Send transcript to frontend
         await self.websocket.send_json({
             "type": "user_transcript",
@@ -387,8 +409,39 @@ class AudioStreamHandler:
             "timestamp": time.time()
         })
         
-        # Add to queue for processing
-        await self.transcript_queue.put(transcript_text)
+        # Check if we have speculative processing running
+        if self.is_speculating and self.speculative_transcript:
+            # Compare with speculative transcript
+            if transcript_text.strip() == self.speculative_transcript.strip():
+                print(f"{timestamp()} ✅ Speculative transcript matched! Keeping LLM response")
+                # Add confirmed transcript to queue
+                await self.transcript_queue.put({
+                    "text": transcript_text,
+                    "speculative": False,
+                    "confirmed": True,
+                    "timestamp": time.time()
+                })
+            else:
+                print(f"{timestamp()} ❌ Speculative mismatch - cancelling")
+                print(f"{timestamp()}    Speculative: '{self.speculative_transcript}'")
+                print(f"{timestamp()}    Final: '{transcript_text}'")
+                # Cancel speculative task if still running
+                if self.speculative_task and not self.speculative_task.done():
+                    self.speculative_task.cancel()
+                # Add correct transcript to queue
+                await self.transcript_queue.put({
+                    "text": transcript_text,
+                    "speculative": False,
+                    "cancelled_speculation": True,
+                    "timestamp": time.time()
+                })
+        else:
+            # No speculation, just add to queue normally
+            await self.transcript_queue.put({
+                "text": transcript_text,
+                "speculative": False,
+                "timestamp": time.time()
+            })
     
     def pause_listening(self):
         """Pause processing user speech (during agent response)"""
@@ -446,9 +499,10 @@ class AudioStreamHandler:
         try:
             print(f"{timestamp()} 🚀 Starting Deepgram streaming transcription")
             
-            # Create new transcriber with callback
+            # Create new transcriber with callbacks
             self.streaming_transcriber = DeepgramStreamingTranscriber(
-                on_transcript=self._on_streaming_transcript
+                on_transcript=self._on_streaming_transcript,
+                on_interim=self._on_interim_transcript
             )
             
             # Connect to Deepgram
@@ -496,3 +550,28 @@ class AudioStreamHandler:
         # This gives us real-time partial results
         # The final transcript will be obtained when we call finalize()
         pass
+    
+    def _on_interim_transcript(self, transcript: str):
+        """Handle interim transcript for speculative processing"""
+        # Update speculative transcript if we're in speculation mode
+        if self.is_speculating and transcript:
+            self.speculative_transcript = transcript
+    
+    async def _speculative_process(self, transcript: str):
+        """Speculatively process transcript while waiting for confirmation"""
+        try:
+            # Send to LLM for speculative processing
+            print(f"{timestamp()} 🔮 Sending speculative transcript to LLM: '{transcript}'")
+            
+            # Add to queue with speculative flag
+            await self.transcript_queue.put({
+                "text": transcript,
+                "speculative": True,
+                "timestamp": time.time()
+            })
+            
+        except asyncio.CancelledError:
+            print(f"{timestamp()} ❌ Speculative processing cancelled")
+            raise
+        except Exception as e:
+            print(f"{timestamp()} ❌ Error in speculative processing: {e}")

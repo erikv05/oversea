@@ -28,6 +28,15 @@ async def generate_gemini_response_stream(user_message: str, conversation: list,
             # Build base prompt from agent settings
             system_prompt = agent_config.get("system_prompt", "You are a conversational voice assistant.")
             
+            # Add natural conversation instructions
+            system_prompt += "\n\nIMPORTANT INSTRUCTIONS:"
+            system_prompt += "\n- Respond as a real person having a natural conversation. Do NOT identify yourself as an AI or language model."
+            system_prompt += "\n- Your output will be converted to speech, so write EXACTLY what should be spoken."
+            system_prompt += "\n- Do NOT write symbols like *, =, #, etc. Spell them out if needed (e.g., 'asterisk', 'equals', 'hashtag')."
+            system_prompt += "\n- Keep responses conversational and natural. Avoid formal or robotic language."
+            system_prompt += "\n- Do NOT apologize for delays or processing time - the user experiences instant responses."
+            system_prompt += "\n- Be concise. This is a voice conversation, not a text chat."
+            
             # Add behavior-specific instructions
             behavior = agent_config.get("behavior", "professional")
             if behavior == "professional":
@@ -52,7 +61,14 @@ async def generate_gemini_response_stream(user_message: str, conversation: list,
             prompt = system_prompt + "\n\n"
         else:
             # Default prompt if no agent config
-            prompt = "You are a conversational voice assistant. Be concise and natural.\n\n"
+            prompt = "You are a conversational voice assistant.\n\n"
+            prompt += "IMPORTANT INSTRUCTIONS:\n"
+            prompt += "- Respond as a real person having a natural conversation. Do NOT identify yourself as an AI or language model.\n"
+            prompt += "- Your output will be converted to speech, so write EXACTLY what should be spoken.\n"
+            prompt += "- Do NOT write symbols like *, =, #, etc. Spell them out if needed (e.g., 'asterisk', 'equals', 'hashtag').\n"
+            prompt += "- Keep responses conversational and natural. Avoid formal or robotic language.\n"
+            prompt += "- Do NOT apologize for delays or processing time - the user experiences instant responses.\n"
+            prompt += "- Be concise. This is a voice conversation, not a text chat.\n\n"
         
         # Minimal conversation history (last 4 messages for speed)
         for msg in conversation[-4:]:

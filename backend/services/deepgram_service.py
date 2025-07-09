@@ -40,11 +40,13 @@ else:
 class DeepgramStreamingTranscriber:
     """Handle streaming transcription with Deepgram"""
     
-    def __init__(self, on_transcript: Callable[[str], None]):
+    def __init__(self, on_transcript: Callable[[str], None], on_interim: Callable[[str], None] = None):
         self.on_transcript = on_transcript
+        self.on_interim = on_interim  # Callback for interim results
         self.connection = None
         self.is_connected = False
         self.transcript_buffer = ""
+        self.interim_transcript = ""  # Track current interim transcript
         self.keep_alive_task = None
         
     async def connect(self):
@@ -163,10 +165,23 @@ class DeepgramStreamingTranscriber:
             except Exception as e:
                 print(f"{timestamp()} ❌ Error finalizing transcript: {e}")
         
-        # Return accumulated transcript
+        # Return accumulated transcript plus any interim
         final_transcript = self.transcript_buffer.strip()
+        if self.interim_transcript and not final_transcript.endswith(self.interim_transcript):
+            final_transcript += " " + self.interim_transcript
         self.transcript_buffer = ""
-        return final_transcript
+        self.interim_transcript = ""
+        return final_transcript.strip()
+    
+    def get_current_transcript(self) -> str:
+        """Get the current transcript without finalizing (for speculative processing)"""
+        current = self.transcript_buffer.strip()
+        if self.interim_transcript:
+            if current and not current.endswith(self.interim_transcript):
+                current += " " + self.interim_transcript
+            elif not current:
+                current = self.interim_transcript
+        return current
     
     async def disconnect(self):
         """Disconnect from Deepgram"""
@@ -208,6 +223,10 @@ class DeepgramStreamingTranscriber:
                 # Interim results for lower latency feedback
                 if transcript:
                     print(f"{timestamp()} 📝 Deepgram interim: '{transcript}'")
+                    self.interim_transcript = transcript
+                    # Callback with interim transcript for speculative processing
+                    if self.on_interim:
+                        self.on_interim(transcript)
     
     async def _on_close(self, client, close, **kwargs):
         """Handle connection close event"""

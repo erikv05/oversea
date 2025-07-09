@@ -23,15 +23,17 @@ async def websocket_endpoint(websocket: WebSocket):
     # Track active generation tasks
     active_tasks = set()
     current_generation_id = 0
+    active_stream_task = None  # Track the current active stream task to prevent duplicates
     
     # Define interrupt handler
     async def handle_interrupt():
-        nonlocal current_generation_id
+        nonlocal current_generation_id, active_stream_task
         print(f"{timestamp()} 🛑 Voice activity interrupt - cancelling {len(active_tasks)} tasks")
         for task in active_tasks:
             if not task.done():
                 task.cancel()
         active_tasks.clear()
+        active_stream_task = None  # Clear active stream task
         current_generation_id += 1  # Increment ID to invalidate old responses
         
         # Ensure system is ready to continue conversation after interruption
@@ -52,25 +54,60 @@ async def websocket_endpoint(websocket: WebSocket):
     # Create a task to continuously check for transcripts
     async def process_transcripts():
         """Continuously check for and process transcripts"""
+        nonlocal current_generation_id, active_stream_task
+        speculative_message = None  # Track speculative message
         while True:
             try:
                 # Check for complete transcripts
-                transcript = await audio_handler.get_transcript()
-                if transcript:
+                transcript_data = await audio_handler.get_transcript()
+                if transcript_data:
+                    # Handle both old string format and new dictionary format
+                    if isinstance(transcript_data, str):
+                        transcript_text = transcript_data
+                        is_speculative = False
+                    else:
+                        transcript_text = transcript_data["text"]
+                        is_speculative = transcript_data.get("speculative", False)
+                        cancelled_speculation = transcript_data.get("cancelled_speculation", False)
+                        
                     print(f"\n{timestamp()} 🔄 NEW CONVERSATION TURN STARTING")
                     print(f"{timestamp()} 📋 Conversation state: listening={audio_handler.is_listening_for_user}, agent_speaking={audio_handler.is_agent_speaking}, interrupting={audio_handler.is_interrupting}")
+                    
+                    if is_speculative:
+                        print(f"{timestamp()} 🔮 Processing SPECULATIVE transcript (prefetch)")
+                    elif cancelled_speculation:
+                        print(f"{timestamp()} ❌ Cancelled speculative processing - using confirmed transcript")
+                        # Cancel any active tasks from speculative processing
+                        current_generation_id += 1
                     
                     response_pipeline_start = time.time()
                     # Calculate delay from speech end
                     if audio_handler.speech_start_time:
                         transcript_delay = response_pipeline_start - audio_handler.speech_start_time
-                        print(f"{timestamp()} 📝 Transcript: '{transcript}' (received {transcript_delay:.2f}s after speech start)")
+                        print(f"{timestamp()} 📝 Transcript: '{transcript_text}' (received {transcript_delay:.2f}s after speech start)")
                     else:
-                        print(f"{timestamp()} 📝 Transcript: '{transcript}'")
+                        print(f"{timestamp()} 📝 Transcript: '{transcript_text}'")
                     print(f"{timestamp()} ⏱️  Starting response pipeline...")
                     
-                    # Add user message to conversation
-                    conversation.append({"role": "user", "content": transcript})
+                    # For speculative transcripts, track separately
+                    if is_speculative:
+                        # Don't add to conversation yet - wait for confirmation
+                        speculative_message = {"role": "user", "content": transcript_text}
+                    else:
+                        # For confirmed transcripts
+                        # Check if this matches the speculative message
+                        if speculative_message and speculative_message["content"] == transcript_text:
+                            print(f"{timestamp()} ✅ Confirmed transcript matches speculative - keeping existing response")
+                            # Don't start a new response, the speculative one is correct
+                            speculative_message = None
+                            continue
+                        elif cancelled_speculation and len(conversation) > 0 and conversation[-1].get("role") == "user":
+                            # Replace the last user message if it was speculative
+                            print(f"{timestamp()} 📝 Replacing speculative message in conversation history")
+                            conversation[-1] = {"role": "user", "content": transcript_text}
+                        else:
+                            # Add to conversation normally
+                            conversation.append({"role": "user", "content": transcript_text})
                     
                     # Pause listening while we process the response
                     audio_handler.pause_listening()
@@ -82,12 +119,11 @@ async def websocket_endpoint(websocket: WebSocket):
                     })
                     
                     # Increment generation ID for this response
-                    nonlocal current_generation_id
                     current_generation_id += 1
                     generation_id = current_generation_id
                     
                     # Stream response with aggressive TTS generation
-                    async def stream_response(gen_id: int):
+                    async def stream_response(gen_id: int, is_spec: bool, spec_msg):
                         if gen_id != current_generation_id:
                             return
                         
@@ -100,7 +136,13 @@ async def websocket_endpoint(websocket: WebSocket):
                             # Track timing
                             llm_start = time.time()
                             
-                            async for text_chunk in generate_gemini_response_stream(transcript, conversation, current_agent):
+                            # For speculative responses, use a temporary conversation that includes the speculative message
+                            if is_spec and spec_msg:
+                                temp_conversation = conversation + [spec_msg]
+                            else:
+                                temp_conversation = conversation
+                            
+                            async for text_chunk in generate_gemini_response_stream(transcript_text, temp_conversation, current_agent):
                                 if gen_id != current_generation_id:
                                     raise asyncio.CancelledError()
                                 
@@ -119,7 +161,8 @@ async def websocket_endpoint(websocket: WebSocket):
                                     match = re.search(r'^(.*?[.!?])\s*', full_response)
                                     if match:
                                         first_sentence = match.group(1)
-                                        print(f"{timestamp()} 🎯 First sentence ready, starting TTS")
+                                        print(f"{timestamp()} 🎯 First sentence ready, starting TTS for: '{first_sentence[:50]}...'")
+                                        print(f"{timestamp()} 📊 Generation ID: {gen_id}, Current ID: {current_generation_id}")
                                         first_tts_task = asyncio.create_task(
                                             generate_tts_audio_fast(first_sentence)
                                         )
@@ -129,7 +172,7 @@ async def websocket_endpoint(websocket: WebSocket):
                             # Wait for first TTS if we have one
                             if first_tts_task:
                                 audio_url = await first_tts_task
-                                if audio_url:
+                                if audio_url and gen_id == current_generation_id:
                                     first_audio_time = time.time() - response_pipeline_start
                                     print(f"{timestamp()} 🎉 First audio ready in {first_audio_time:.2f}s from user stop")
                                     
@@ -141,13 +184,15 @@ async def websocket_endpoint(websocket: WebSocket):
                                         "text": first_sentence,
                                         "timestamp": time.time()
                                     })
+                                elif gen_id != current_generation_id:
+                                    print(f"{timestamp()} ⏭️  Skipping audio - generation ID mismatch ({gen_id} != {current_generation_id})")
                             
                             # Generate TTS for remaining text if any
                             remaining_text = full_response[len(first_sentence):].strip()
                             if remaining_text and remaining_text not in ["", "."]:
                                 print(f"{timestamp()} 🔊 TTS: Generating remaining audio")
                                 remaining_audio_url = await generate_tts_audio_fast(remaining_text)
-                                if remaining_audio_url:
+                                if remaining_audio_url and gen_id == current_generation_id:
                                     # Mark that agent is speaking (in case first chunk didn't exist)
                                     audio_handler.set_agent_speaking(True)
                                     await websocket.send_json({
@@ -156,9 +201,15 @@ async def websocket_endpoint(websocket: WebSocket):
                                         "text": remaining_text,
                                         "timestamp": time.time()
                                     })
+                                elif gen_id != current_generation_id:
+                                    print(f"{timestamp()} ⏭️  Skipping remaining audio - generation ID mismatch")
                             
-                            # Add complete response to conversation
-                            conversation.append({"role": "assistant", "content": full_response})
+                            # Add complete response to conversation only for confirmed transcripts
+                            if not is_spec and gen_id == current_generation_id:
+                                conversation.append({"role": "assistant", "content": full_response})
+                                # Clear speculative message since we've processed a confirmed response
+                                speculative_message = None
+                            # For speculative responses that complete, we'll add them when confirmed
                             
                             # Send stream complete
                             await websocket.send_json({
@@ -202,19 +253,34 @@ async def websocket_endpoint(websocket: WebSocket):
                             audio_handler.resume_listening()
                             raise
                     
+                    # Cancel any existing stream task if it's still running
+                    if active_stream_task and not active_stream_task.done():
+                        print(f"{timestamp()} ⚠️  Cancelling previous stream task")
+                        active_stream_task.cancel()
+                        try:
+                            await active_stream_task
+                        except asyncio.CancelledError:
+                            pass
+                    
                     # Run the streaming in a task
-                    stream_task = asyncio.create_task(stream_response(generation_id))
+                    stream_task = asyncio.create_task(stream_response(generation_id, is_speculative, speculative_message))
+                    active_stream_task = stream_task  # Track as active stream
                     active_tasks.add(stream_task)
                     stream_task.add_done_callback(lambda t: active_tasks.discard(t))
                     
                     try:
                         await stream_task
                     except asyncio.CancelledError:
+                        print(f"{timestamp()} 🔄 Stream task cancelled")
                         pass
                     except Exception as e:
                         print(f"{timestamp()} ❌ Stream error: {e}")
                         import traceback
                         traceback.print_exc()
+                    finally:
+                        # Clear active stream task when done
+                        if active_stream_task == stream_task:
+                            active_stream_task = None
                         
             except Exception as e:
                 print(f"{timestamp()} ❌ Transcript processing error: {e}")
