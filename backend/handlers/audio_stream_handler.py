@@ -48,8 +48,8 @@ class AudioStreamHandler:
         
         # Adjusted thresholds for WebRTC VAD
         self.speech_start_frames = 2  # 60ms of speech to start (2 * 30ms)
-        self.speech_prefetch_frames = 17  # ~500ms of silence (17 * 30ms) - less aggressive
-        self.speech_confirm_frames = 27  # ~800ms of silence (27 * 30ms)
+        self.speech_prefetch_frames = 7  # ~200ms of silence (7 * 30ms) - not used anymore
+        self.speech_confirm_frames = 7  # ~200ms of silence (7 * 30ms) - fast response
         
         # Minimum speech duration
         self.min_speech_duration = VAD_CONFIG["min_speech_duration"]
@@ -235,7 +235,7 @@ class AudioStreamHandler:
                         self.speech_confirmed = True
                         speech_duration = time.time() - self.speech_start_time
                         buffer_size_ms = len(self.speech_buffer) / 16
-                        print(f"{timestamp()} ✅ Speech confirmed ended (~800ms silence, duration: {speech_duration:.2f}s)")
+                        print(f"{timestamp()} ✅ Speech confirmed ended (~200ms silence, duration: {speech_duration:.2f}s)")
                         
                         # Process all speech as queries when listening for user input
                         if self.is_listening_for_user and len(self.speech_buffer) > self.min_speech_duration:
