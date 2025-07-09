@@ -5,7 +5,7 @@ from typing import Optional
 from fastapi import WebSocket
 import webrtcvad
 from config.settings import VAD_CONFIG
-from services.deepgram_service import transcribe_audio
+from services.deepgram_service import DeepgramStreamingTranscriber
 from utils.helpers import timestamp
 
 
@@ -69,6 +69,10 @@ class AudioStreamHandler:
         
         # Performance tracking
         self.speech_start_time = None
+        
+        # Streaming transcription
+        self.streaming_transcriber = None
+        self.is_streaming = False
         
     def set_interrupt_callback(self, callback):
         """Set the callback function for interruptions"""
@@ -188,6 +192,23 @@ class AudioStreamHandler:
                     # Add pre-speech buffer to capture beginning of speech
                     self.speech_buffer.extend(self.pre_speech_buffer)
                     
+                    # Start streaming transcription immediately
+                    if self.is_listening_for_user:
+                        # Start connection first
+                        await self._start_streaming_transcription()
+                        
+                        # Send audio immediately after connection is established
+                        if self.streaming_transcriber and self.is_streaming:
+                            print(f"{timestamp()} 🎤 Sending initial audio to Deepgram")
+                            # Send the pre-speech buffer first
+                            if len(self.pre_speech_buffer) > 0:
+                                await self.streaming_transcriber.send_audio(bytes(self.pre_speech_buffer))
+                            # Send current frame
+                            await self.streaming_transcriber.send_audio(frame)
+                            # Send any accumulated audio
+                            if len(self.speech_buffer) > 0:
+                                await self.streaming_transcriber.send_audio(bytes(self.speech_buffer))
+                    
                     await self.websocket.send_json({
                         "type": "speech_start",
                         "timestamp": time.time()
@@ -196,6 +217,10 @@ class AudioStreamHandler:
                 if self.is_speaking:
                     # Add frame to speech buffer
                     self.speech_buffer.extend(frame)
+                    
+                    # Stream audio to Deepgram in real-time
+                    if self.is_streaming and self.streaming_transcriber:
+                        await self.streaming_transcriber.send_audio(frame)
             else:
                 # Silence detected - reset interruption counter
                 if self.interruption_speech_counter > 0:
@@ -209,17 +234,8 @@ class AudioStreamHandler:
                     # Continue adding to buffer during short pauses
                     self.speech_buffer.extend(frame)
                     
-                    # Start prefetch after ~200ms of silence (only if listening for user)
-                    if self.silence_counter == self.speech_prefetch_frames and self.is_listening_for_user:
-                        if len(self.speech_buffer) > self.min_speech_duration and not self.is_speculating:
-                            self.is_speculating = True
-                            buffer_size_ms = len(self.speech_buffer) / 16
-                            print(f"{timestamp()} 🔮 Starting prefetch (~200ms silence, {buffer_size_ms:.0f}ms audio)")
-                            
-                            # Start prefetch task
-                            self.speculative_task = asyncio.create_task(
-                                self._prefetch_process(bytes(self.speech_buffer))
-                            )
+                    # With streaming, we don't need the 200ms prefetch anymore
+                    # The transcript is already being processed in real-time
                     
                     # Confirm speech ended after ~800ms total silence
                     if self.silence_counter >= self.speech_confirm_frames:
@@ -235,15 +251,29 @@ class AudioStreamHandler:
                                 print(f"{timestamp()} 🔄 Processing interrupting speech as new query")
                                 self.is_interrupting = False
                             
-                            # Process transcript (interrupting or normal)
-                            if self.speculative_transcript:
-                                print(f"{timestamp()} 🎯 Using prefetched transcript: '{self.speculative_transcript}'")
-                                await self._commit_transcript(self.speculative_transcript)
-                                self.speculative_transcript = None
+                            # Finalize streaming transcription
+                            if self.is_streaming and self.streaming_transcriber:
+                                final_transcript = await self.streaming_transcriber.finalize()
+                                await self._stop_streaming_transcription()
+                                
+                                if final_transcript:
+                                    print(f"{timestamp()} 🎯 Final streaming transcript: '{final_transcript}'")
+                                    await self._commit_transcript(final_transcript)
+                                else:
+                                    print(f"{timestamp()} ⚠️  No streaming transcript received")
+                                    await self.websocket.send_json({
+                                        "type": "error",
+                                        "message": "Failed to transcribe audio",
+                                        "timestamp": time.time()
+                                    })
                             else:
-                                # No prefetch available, process normally
-                                print(f"{timestamp()} 📝 No prefetch available, processing normally")
-                                await self._process_speech_segment(bytes(self.speech_buffer))
+                                # Streaming not active - fail fast
+                                print(f"{timestamp()} ❌ Streaming transcription not active - cannot process speech")
+                                await self.websocket.send_json({
+                                    "type": "error",
+                                    "message": "Speech recognition unavailable",
+                                    "timestamp": time.time()
+                                })
                         elif self.is_interrupting:
                             # Just reset interruption state if not listening
                             print(f"{timestamp()} 🔇 Interruption speech ended - not listening for user input")
@@ -346,56 +376,7 @@ class AudioStreamHandler:
             # Fallback - be conservative and assume not voice to avoid false positives
             return False
     
-    async def _process_speech_segment(self, audio_data: bytes):
-        """Process a complete speech segment with Whisper"""
-        if not self.is_listening_for_user:
-            # User is interrupting - just notify
-            print(f"{timestamp()} 🔊 User interruption during agent response")
-            await self.websocket.send_json({
-                "type": "user_interruption",
-                "text": "[User speaking]",
-                "timestamp": time.time()
-            })
-            return
-        
-        transcript_text = await transcribe_audio(audio_data)
-        
-        if transcript_text:
-            # Send transcript to frontend
-            await self.websocket.send_json({
-                "type": "user_transcript",
-                "text": transcript_text,
-                "timestamp": time.time()
-            })
-            
-            # Add to queue for processing
-            await self.transcript_queue.put(transcript_text)
     
-    async def _prefetch_process(self, audio_data: bytes):
-        """Prefetch transcription after 200ms but don't commit until confirmed"""
-        try:
-            prefetch_start = time.time()
-            print(f"{timestamp()} 🔮 [1/2] Starting prefetch transcription")
-            
-            # Start transcription immediately
-            transcript_text = await transcribe_audio(audio_data)
-            
-            if transcript_text:
-                transcribe_time = time.time() - prefetch_start
-                print(f"{timestamp()} 🔮 [2/2] Prefetch ready: '{transcript_text}' ({transcribe_time:.2f}s)")
-                
-                # Store the transcript but don't send it yet
-                self.speculative_transcript = transcript_text
-            else:
-                print(f"{timestamp()} 🔮 Prefetch failed - no valid transcript")
-                
-        except asyncio.CancelledError:
-            print(f"{timestamp()} 🔮 Prefetch cancelled - user resumed speaking")
-            self.speculative_transcript = None
-            raise
-        except Exception as e:
-            print(f"{timestamp()} ❌ Prefetch error: {e}")
-            self.speculative_transcript = None
     
     async def _commit_transcript(self, transcript_text: str):
         """Commit a prefetched transcript once speech is confirmed ended"""
@@ -455,3 +436,63 @@ class AudioStreamHandler:
         # All processing now happens in add_audio with VAD
         while self.is_running:
             await asyncio.sleep(1)
+    
+    async def _start_streaming_transcription(self):
+        """Start streaming transcription with Deepgram"""
+        # Skip if already streaming
+        if self.is_streaming and self.streaming_transcriber:
+            return
+            
+        try:
+            print(f"{timestamp()} 🚀 Starting Deepgram streaming transcription")
+            
+            # Create new transcriber with callback
+            self.streaming_transcriber = DeepgramStreamingTranscriber(
+                on_transcript=self._on_streaming_transcript
+            )
+            
+            # Connect to Deepgram
+            connected = await self.streaming_transcriber.connect()
+            if connected:
+                self.is_streaming = True
+                print(f"{timestamp()} ✅ Streaming transcription active")
+            else:
+                print(f"{timestamp()} ❌ Failed to connect to Deepgram streaming API")
+                self.streaming_transcriber = None
+                self.is_streaming = False
+                # Send error to frontend
+                await self.websocket.send_json({
+                    "type": "error",
+                    "message": "Speech recognition unavailable - check Deepgram API key",
+                    "timestamp": time.time()
+                })
+                raise Exception("Failed to connect to Deepgram streaming API")
+                
+        except Exception as e:
+            print(f"{timestamp()} ❌ Error starting streaming transcription: {type(e).__name__}: {e}")
+            print(f"{timestamp()} 📋 Please check:")
+            print(f"     1. DEEPGRAM_API_KEY is set in .env file")
+            print(f"     2. The API key is valid and active")
+            print(f"     3. Your account has streaming API access")
+            print(f"     4. Network connectivity to api.deepgram.com")
+            self.streaming_transcriber = None
+            self.is_streaming = False
+            # Re-raise to fail fast
+            raise
+    
+    async def _stop_streaming_transcription(self):
+        """Stop streaming transcription"""
+        if self.streaming_transcriber:
+            try:
+                await self.streaming_transcriber.disconnect()
+            except Exception as e:
+                print(f"{timestamp()} ❌ Error stopping streaming transcription: {e}")
+            finally:
+                self.streaming_transcriber = None
+                self.is_streaming = False
+    
+    def _on_streaming_transcript(self, transcript: str):
+        """Handle streaming transcript updates"""
+        # This gives us real-time partial results
+        # The final transcript will be obtained when we call finalize()
+        pass
