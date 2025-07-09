@@ -57,11 +57,8 @@ class AudioStreamHandler:
         # Audio accumulator for frame alignment
         self.audio_accumulator = bytearray()
         
-        # Speculative processing
-        self.speculative_task = None
-        self.is_speculating = False
-        self.speculative_transcript = None
-        self.speech_confirmed = False
+        # Remove speculative processing - keeping it simple
+        # When VAD detects end of speech, we'll use whatever we have from Deepgram
         
         # Transcript handling
         self.transcript_queue = asyncio.Queue()
@@ -179,15 +176,7 @@ class AudioStreamHandler:
                     self.speech_start_time = time.time()
                     print(f"{timestamp()} 🎤 Speech started (WebRTC VAD)")
                     
-                    # Cancel any speculative processing if user resumes speaking
-                    if self.speculative_task and not self.speculative_task.done():
-                        print(f"{timestamp()} ❌ Cancelling prefetch - user resumed speaking")
-                        self.speculative_task.cancel()
-                        self.is_speculating = False
-                    
-                    # Clear any speculative transcript
-                    self.speculative_transcript = None
-                    self.speech_confirmed = False
+                    # User resumed speaking - clear any pending state
                     
                     # Add pre-speech buffer to capture beginning of speech
                     self.speech_buffer.extend(self.pre_speech_buffer)
@@ -238,21 +227,7 @@ class AudioStreamHandler:
                     if self.is_streaming and self.streaming_transcriber:
                         await self.streaming_transcriber.send_audio(frame)
                     
-                    # SPECULATIVE PROCESSING: Start prefetch after ~200ms silence
-                    if self.silence_counter >= self.speech_prefetch_frames and not self.is_speculating:
-                        # Get current interim transcript for speculative processing
-                        if self.is_streaming and self.streaming_transcriber:
-                            interim_transcript = self.streaming_transcriber.get_current_transcript()
-                            if interim_transcript and self.is_listening_for_user:
-                                print(f"{timestamp()} 🚀 Starting speculative processing (~200ms silence)")
-                                print(f"{timestamp()} 📝 Interim transcript: '{interim_transcript}'")
-                                self.is_speculating = True
-                                self.speculative_transcript = interim_transcript
-                                
-                                # Start speculative processing task
-                                self.speculative_task = asyncio.create_task(
-                                    self._speculative_process(interim_transcript)
-                                )
+                    # Don't do speculative processing anymore - wait for VAD to confirm speech end
                     
                     # Confirm speech ended after ~800ms total silence
                     if self.silence_counter >= self.speech_confirm_frames:
@@ -275,10 +250,6 @@ class AudioStreamHandler:
                                 
                                 if final_transcript:
                                     print(f"{timestamp()} 🎯 Final streaming transcript: '{final_transcript}'")
-                                    
-                                    # Cancel any ongoing speculation if transcript changed
-                                    if self.is_speculating and self.speculative_task and not self.speculative_task.done():
-                                        self.speculative_task.cancel()
                                     
                                     await self._commit_transcript(final_transcript)
                                 else:
@@ -305,8 +276,6 @@ class AudioStreamHandler:
                         
                         # Clear state
                         self.speech_buffer.clear()
-                        self.is_speculating = False
-                        self.speech_confirmed = False
                         
                         await self.websocket.send_json({
                             "type": "speech_end",
@@ -409,39 +378,8 @@ class AudioStreamHandler:
             "timestamp": time.time()
         })
         
-        # Check if we have speculative processing running
-        if self.is_speculating and self.speculative_transcript:
-            # Compare with speculative transcript
-            if transcript_text.strip() == self.speculative_transcript.strip():
-                print(f"{timestamp()} ✅ Speculative transcript matched! Keeping LLM response")
-                # Add confirmed transcript to queue
-                await self.transcript_queue.put({
-                    "text": transcript_text,
-                    "speculative": False,
-                    "confirmed": True,
-                    "timestamp": time.time()
-                })
-            else:
-                print(f"{timestamp()} ❌ Speculative mismatch - cancelling")
-                print(f"{timestamp()}    Speculative: '{self.speculative_transcript}'")
-                print(f"{timestamp()}    Final: '{transcript_text}'")
-                # Cancel speculative task if still running
-                if self.speculative_task and not self.speculative_task.done():
-                    self.speculative_task.cancel()
-                # Add correct transcript to queue
-                await self.transcript_queue.put({
-                    "text": transcript_text,
-                    "speculative": False,
-                    "cancelled_speculation": True,
-                    "timestamp": time.time()
-                })
-        else:
-            # No speculation, just add to queue normally
-            await self.transcript_queue.put({
-                "text": transcript_text,
-                "speculative": False,
-                "timestamp": time.time()
-            })
+        # Simply add transcript to queue
+        await self.transcript_queue.put(transcript_text)
     
     def pause_listening(self):
         """Pause processing user speech (during agent response)"""
@@ -458,14 +396,11 @@ class AudioStreamHandler:
         # NOTE: Do NOT reset is_agent_speaking here! 
         # Agent speaking state should only be controlled by audio playback completion
         self.is_interrupting = False
-        # Clear any buffered audio and speculative state
+        # Clear any buffered audio
         self.speech_buffer.clear()
         self.is_speaking = False
         self.silence_counter = 0
         self.speech_counter = 0
-        self.speculative_transcript = None
-        self.speech_confirmed = False
-        self.is_speculating = False
         
     def set_agent_speaking(self, speaking: bool):
         """Set whether the agent is currently speaking"""
@@ -552,26 +487,6 @@ class AudioStreamHandler:
         pass
     
     def _on_interim_transcript(self, transcript: str):
-        """Handle interim transcript for speculative processing"""
-        # Update speculative transcript if we're in speculation mode
-        if self.is_speculating and transcript:
-            self.speculative_transcript = transcript
-    
-    async def _speculative_process(self, transcript: str):
-        """Speculatively process transcript while waiting for confirmation"""
-        try:
-            # Send to LLM for speculative processing
-            print(f"{timestamp()} 🔮 Sending speculative transcript to LLM: '{transcript}'")
-            
-            # Add to queue with speculative flag
-            await self.transcript_queue.put({
-                "text": transcript,
-                "speculative": True,
-                "timestamp": time.time()
-            })
-            
-        except asyncio.CancelledError:
-            print(f"{timestamp()} ❌ Speculative processing cancelled")
-            raise
-        except Exception as e:
-            print(f"{timestamp()} ❌ Error in speculative processing: {e}")
+        """Handle interim transcript updates"""
+        # We don't use interim transcripts for speculative processing anymore
+        pass
