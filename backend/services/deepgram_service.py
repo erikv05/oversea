@@ -167,8 +167,8 @@ class DeepgramStreamingTranscriber:
             try:
                 # The SDK v4+ uses finalize() method instead of sending a message
                 await self.connection.finalize()
-                # Wait a bit for final results
-                await asyncio.sleep(0.2)
+                # Wait a shorter time for final results
+                await asyncio.sleep(0.1)
             except Exception as e:
                 print(f"{timestamp()} ❌ Error finalizing transcript: {e}")
         
@@ -176,6 +176,8 @@ class DeepgramStreamingTranscriber:
         final_transcript = self.transcript_buffer.strip()
         if self.interim_transcript and not final_transcript.endswith(self.interim_transcript):
             final_transcript += " " + self.interim_transcript
+        
+        # Clear buffers for next utterance
         self.transcript_buffer = ""
         self.interim_transcript = ""
         return final_transcript.strip()

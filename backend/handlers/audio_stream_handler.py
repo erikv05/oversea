@@ -88,7 +88,7 @@ class AudioStreamHandler:
         if self.processing_task:
             self.processing_task.cancel()
         # Stop streaming transcription if active
-        if self.is_streaming:
+        if self.is_streaming and self.streaming_transcriber:
             await self._stop_streaming_transcription()
             
     async def add_audio(self, audio_data: bytes):
@@ -198,14 +198,11 @@ class AudioStreamHandler:
                         # Send audio immediately after connection is established
                         if self.streaming_transcriber and self.is_streaming:
                             print(f"{timestamp()} 🎤 Sending initial audio to Deepgram")
-                            # Send the pre-speech buffer first
-                            if len(self.pre_speech_buffer) > 0:
-                                await self.streaming_transcriber.send_audio(bytes(self.pre_speech_buffer))
-                            # Send current frame
-                            await self.streaming_transcriber.send_audio(frame)
-                            # Send any accumulated audio
+                            # Send all accumulated audio (includes pre-speech buffer)
                             if len(self.speech_buffer) > 0:
                                 await self.streaming_transcriber.send_audio(bytes(self.speech_buffer))
+                            # Send current frame
+                            await self.streaming_transcriber.send_audio(frame)
                     
                     await self.websocket.send_json({
                         "type": "speech_start",
@@ -254,7 +251,7 @@ class AudioStreamHandler:
                             # Finalize streaming transcription
                             if self.is_streaming and self.streaming_transcriber:
                                 final_transcript = await self.streaming_transcriber.finalize()
-                                await self._stop_streaming_transcription()
+                                # Don't stop the connection - keep it alive for next utterance
                                 
                                 if final_transcript:
                                     print(f"{timestamp()} 🎯 Final streaming transcript: '{final_transcript}'")
