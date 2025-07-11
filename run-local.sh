@@ -34,7 +34,7 @@ trap cleanup EXIT INT TERM
 # Start backend server
 echo "📦 Starting backend server..."
 cd backend
-python3 -m uvicorn main:app --reload --host 0.0.0.0 --port 8000 &
+.venv/bin/python3 -m uvicorn main:app --reload --host 0.0.0.0 --port 8000 &
 BACKEND_PID=$!
 cd ..
 

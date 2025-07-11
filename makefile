@@ -1,12 +1,30 @@
 .PHONY: start
 start:
-	cd frontend && npm run dev
-	cd backend && source .venv/bin/activate && python3 main.py
+	./run-local.sh
 
-.PHONY: server
-server:
-	cd backend && source .venv/bin/activate && python3 main.py
+.PHONY: install
+install:
+	cd backend && source .venv/bin/activate && pip3 install -r requirements.txt
+	cd frontend && npm install
 
-.PHONY: client
-client:
-	cd frontend && npm run dev
+.PHONY: clean
+clean:
+	cd backend && rm -rf .venv
+	cd frontend && rm -rf node_modules
+
+.PHONY: clean-install
+clean-install:
+	make clean
+	make install
+
+.PHONY: stop
+stop:
+	./stop-local.sh
+
+.PHONY: restart
+	./stop-local.sh
+	./run-local.sh
+
+.PHONY: deploy
+	./deploy-backend-gcp.sh
+	vercel --prod
