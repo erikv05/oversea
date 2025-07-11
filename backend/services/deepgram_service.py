@@ -172,15 +172,14 @@ class DeepgramStreamingTranscriber:
             except Exception as e:
                 print(f"{timestamp()} ❌ Error finalizing transcript: {e}")
         
-        # Return accumulated transcript plus any interim
+        # Return only the accumulated transcript buffer
+        # Don't append interim as it's usually already included in finals
         final_transcript = self.transcript_buffer.strip()
-        if self.interim_transcript and not final_transcript.endswith(self.interim_transcript):
-            final_transcript += " " + self.interim_transcript
         
         # Clear buffers for next utterance
         self.transcript_buffer = ""
         self.interim_transcript = ""
-        return final_transcript.strip()
+        return final_transcript
     
     def get_current_transcript(self) -> str:
         """Get the current transcript without finalizing (for speculative processing)"""
@@ -224,7 +223,14 @@ class DeepgramStreamingTranscriber:
                 # Final transcript for this segment
                 if transcript:
                     print(f"{timestamp()} 📝 Deepgram final: '{transcript}'")
+                    # Check if this final is just confirming our interim
+                    if self.interim_transcript and transcript.startswith(self.interim_transcript):
+                        # This final includes the interim, so replace interim portion
+                        # Remove the part we already have
+                        pass
                     self.transcript_buffer += transcript + " "
+                    # Clear interim since it's now final
+                    self.interim_transcript = ""
                     # Callback with the partial transcript
                     if self.on_transcript:
                         self.on_transcript(transcript)
