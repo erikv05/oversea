@@ -6,6 +6,8 @@ export class AudioStreamer {
   private source: MediaStreamAudioSourceNode | null = null;
   private websocket: WebSocket | null = null;
   private _isStreaming = false;
+  private audioLevelCallback: ((level: number) => void) | null = null;
+  private analyser: AnalyserNode | null = null;
   
   constructor() {
     console.log('[AudioStreamer] Initialized');
@@ -13,6 +15,10 @@ export class AudioStreamer {
   
   get isStreaming() {
     return this._isStreaming;
+  }
+  
+  setAudioLevelCallback(callback: (level: number) => void) {
+    this.audioLevelCallback = callback;
   }
   
   async initialize(websocket: WebSocket) {
@@ -36,6 +42,11 @@ export class AudioStreamer {
       // Create audio source from microphone
       this.source = this.audioContext.createMediaStreamSource(this.mediaStream);
       
+      // Create analyser node for audio level monitoring
+      this.analyser = this.audioContext.createAnalyser();
+      this.analyser.fftSize = 256;
+      this.analyser.smoothingTimeConstant = 0.8;
+      
       // Create script processor for capturing audio
       // Buffer size of 4096 gives us ~85ms chunks at 48kHz
       this.processor = this.audioContext.createScriptProcessor(4096, 1, 1);
@@ -45,6 +56,22 @@ export class AudioStreamer {
         if (!this._isStreaming) return;
         
         const inputData = e.inputBuffer.getChannelData(0);
+
+        // Calculate audio level if callback is set
+        if (this.audioLevelCallback && this.analyser) {
+          const dataArray = new Uint8Array(this.analyser.frequencyBinCount);
+          this.analyser.getByteTimeDomainData(dataArray);
+          
+          // Calculate RMS (Root Mean Square) for better voice detection
+          let sum = 0;
+          for (let i = 0; i < dataArray.length; i++) {
+            const normalized = (dataArray[i] - 128) / 128; // Normalize to -1 to 1
+            sum += normalized * normalized;
+          }
+          const rms = Math.sqrt(sum / dataArray.length);
+          const level = Math.min(1, rms * 4); // Scale and clamp to 0-1
+          this.audioLevelCallback(level);
+        }
 
         // Remove frontend VAD - rely only on backend WebRTC VAD
         // The backend has more sophisticated VAD that can distinguish
@@ -82,13 +109,14 @@ export class AudioStreamer {
   }
   
   start() {
-    if (!this.source || !this.processor || !this.audioContext) {
+    if (!this.source || !this.processor || !this.audioContext || !this.analyser) {
       console.error('[AudioStreamer] Not initialized');
       return;
     }
     
     this._isStreaming = true;
-    this.source.connect(this.processor);
+    this.source.connect(this.analyser);
+    this.analyser.connect(this.processor);
     this.processor.connect(this.audioContext.destination);
     
     console.log('[AudioStreamer] Started streaming');
@@ -97,13 +125,19 @@ export class AudioStreamer {
   stop() {
     this._isStreaming = false;
     
-    if (this.source && this.processor) {
+    if (this.source && this.processor && this.analyser) {
       try {
         this.source.disconnect();
+        this.analyser.disconnect();
         this.processor.disconnect();
       } catch (e) {
         // Ignore disconnection errors
       }
+    }
+    
+    // Clear audio level callback
+    if (this.audioLevelCallback) {
+      this.audioLevelCallback(0);
     }
     
     console.log('[AudioStreamer] Stopped streaming');
