@@ -22,9 +22,11 @@ stop:
 	./stop-local.sh
 
 .PHONY: restart
+restart:
 	./stop-local.sh
 	./run-local.sh
 
 .PHONY: deploy
+deploy:
 	./deploy-backend-gcp.sh
 	vercel --prod
