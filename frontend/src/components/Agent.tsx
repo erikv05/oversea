@@ -30,6 +30,8 @@ function Agent({ agentId, onBack }: AgentProps) {
   const callTimerRef = useRef<number | null>(null);
   const [agentData, setAgentData] = useState<any>(null);
   const [loadingAgent, setLoadingAgent] = useState(true);
+  const [audioLevel, setAudioLevel] = useState(0);
+  const [isSpeechDetected, setIsSpeechDetected] = useState(false);
 
   // Fetch agent data
   useEffect(() => {
@@ -102,6 +104,12 @@ function Agent({ agentId, onBack }: AgentProps) {
       
       // Initialize audio streamer after WebSocket is connected
       audioStreamerRef.current = new AudioStreamer();
+      
+      // Set up audio level callback
+      audioStreamerRef.current.setAudioLevelCallback((level) => {
+        setAudioLevel(level);
+      });
+      
       const initialized = await audioStreamerRef.current.initialize(wsRef.current!);
       if (!initialized) {
         alert("Failed to initialize audio streaming. Please check microphone permissions.");
@@ -156,6 +164,16 @@ function Agent({ agentId, onBack }: AgentProps) {
           if (audioPlayerRef.current) {
             audioPlayerRef.current.stop();
           }
+          break;
+          
+        case "speech_start":
+          console.log("[FRONTEND] Speech start detected");
+          setIsSpeechDetected(true);
+          break;
+          
+        case "speech_end":
+          console.log("[FRONTEND] Speech end detected");
+          setIsSpeechDetected(false);
           break;
           
         case "interim_transcript": {
@@ -361,23 +379,47 @@ function Agent({ agentId, onBack }: AgentProps) {
     return `${mins}:${secs.toString().padStart(2, '0')}`;
   };
 
-  const AudioWaveform = () => (
-    <div className="flex items-center justify-center space-x-1 h-16">
-      {[...Array(20)].map((_, i) => (
-        <div
-          key={i}
-          className={`w-1 bg-gradient-to-t from-blue-600 to-blue-400 rounded-full animate-pulse ${
-            isListening ? 'opacity-100' : 'opacity-30'
-          }`}
-          style={{
-            height: `${Math.random() * 40 + 8}px`,
-            animationDelay: `${i * 0.1}s`,
-            animationDuration: isListening ? `${0.5 + Math.random() * 0.5}s` : '1s'
-          }}
-        />
-      ))}
-    </div>
-  );
+  const AudioWaveform = () => {
+    // Create different heights based on audio level and speech detection
+    const barCount = 20;
+    const baseHeight = 8;
+    const maxAdditionalHeight = 40;
+    
+    return (
+      <div className="flex items-center justify-center space-x-1 h-16">
+        {[...Array(barCount)].map((_, i) => {
+          // Create a wave effect with higher bars in the middle
+          const distanceFromCenter = Math.abs(i - barCount / 2);
+          const centerMultiplier = 1 - (distanceFromCenter / (barCount / 2)) * 0.5;
+          
+          // Base height varies with audio level
+          const levelHeight = audioLevel * maxAdditionalHeight * centerMultiplier;
+          
+          // Add some randomness for natural effect
+          const randomVariation = (Math.random() - 0.5) * 10;
+          
+          // Final height calculation
+          const height = baseHeight + levelHeight + (isSpeechDetected ? randomVariation : 0);
+          
+          return (
+            <div
+              key={i}
+              className={`w-1 bg-gradient-to-t rounded-full transition-all duration-100 ${
+                isSpeechDetected 
+                  ? 'from-green-500 to-green-300' 
+                  : 'from-blue-600 to-blue-400'
+              } ${
+                isListening ? 'opacity-100' : 'opacity-30'
+              }`}
+              style={{
+                height: `${Math.max(baseHeight, Math.min(baseHeight + maxAdditionalHeight, height))}px`,
+              }}
+            />
+          );
+        })}
+      </div>
+    );
+  };
 
   if (loadingAgent) {
     return (
