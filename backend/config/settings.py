@@ -25,8 +25,8 @@ CORS_ORIGINS = ["*"]  # Allow all origins (not secure, but as requested)
 
 # Voice Activity Detection Parameters
 VAD_CONFIG = {
-    "min_speech_duration": 1600,  # 200ms (reduced from 400ms for faster interruptions)
-    "pre_speech_buffer_size": 1600,  # 100ms (reduced from 200ms)
+    "min_speech_duration": 2400,  # 300ms minimum to avoid cutting off short utterances
+    "pre_speech_buffer_size": 3200,  # 200ms to capture speech onset reliably
 }
 
 # Model Configuration

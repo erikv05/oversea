@@ -300,6 +300,8 @@ async def websocket_endpoint(websocket: WebSocket):
                         # Generate TTS for greeting
                         greeting_audio_url = await generate_tts_audio_fast(current_agent["greeting"])
                         if greeting_audio_url:
+                            # Pause listening while agent speaks greeting
+                            audio_handler.pause_listening()
                             # Mark agent as speaking before sending audio
                             audio_handler.set_agent_speaking(True)
                             await websocket.send_json({
@@ -312,6 +314,8 @@ async def websocket_endpoint(websocket: WebSocket):
                     # Frontend finished playing audio
                     print(f"{timestamp()} 🔇 Audio playback complete")
                     audio_handler.set_agent_speaking(False)
+                    # Resume listening after any audio playback (greeting or response)
+                    audio_handler.resume_listening()
                     
                 elif data.get("type") == "interrupt":
                     # Cancel all active tasks

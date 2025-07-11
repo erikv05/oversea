@@ -76,8 +76,10 @@ class DeepgramStreamingTranscriber:
                 channels=1,
                 endpointing=False,  # We handle our own endpointing with VAD
                 interim_results=True,  # Get partial results for lower latency
-                utterance_end_ms=1000,  # Only for safety, we manage this with VAD
+                utterance_end_ms=2000,  # Safety fallback (2s)
                 vad_events=False,  # We use our own VAD
+                filler_words=False,  # Remove filler words for cleaner transcripts
+                diarize=False,  # Disable speaker detection for speed
             )
             
             print(f"{timestamp()} 📋 Streaming options:")
@@ -147,12 +149,17 @@ class DeepgramStreamingTranscriber:
             return False
     
     async def send_audio(self, audio_chunk: bytes):
-        """Send audio chunk to Deepgram"""
+        """Send audio chunk to Deepgram with error handling"""
         if self.connection and self.is_connected:
             try:
                 await self.connection.send(audio_chunk)
             except Exception as e:
                 print(f"{timestamp()} ❌ Error sending audio to Deepgram: {e}")
+                # Mark connection as failed
+                self.is_connected = False
+                # Cancel keep-alive
+                if self.keep_alive_task and not self.keep_alive_task.done():
+                    self.keep_alive_task.cancel()
     
     async def finalize(self) -> str:
         """Finalize the current utterance and get the final transcript"""
@@ -243,17 +250,23 @@ class DeepgramStreamingTranscriber:
     
     async def _keep_alive(self):
         """Send periodic audio to prevent timeout"""
+        consecutive_failures = 0
         while self.is_connected:
             try:
-                # Send audio every 8 seconds (Deepgram timeout is 10s)
-                await asyncio.sleep(8)
+                # Send audio every 5 seconds (more frequent than 10s timeout)
+                await asyncio.sleep(5)
                 if self.is_connected and self.connection:
                     # Send silent audio to keep connection alive
-                    # 100ms of silence at 8000 Hz
-                    silence = b'\x00\x00' * 800
+                    # 50ms of silence at 8000 Hz (smaller chunk)
+                    silence = b'\x00\x00' * 400
                     await self.connection.send(silence)
+                    consecutive_failures = 0  # Reset on success
             except Exception as e:
-                print(f"{timestamp()} ⚠️  Keep-alive error: {e}")
-                break
+                consecutive_failures += 1
+                print(f"{timestamp()} ⚠️  Keep-alive error ({consecutive_failures}): {e}")
+                if consecutive_failures >= 3:
+                    print(f"{timestamp()} ❌ Keep-alive failed 3 times - connection lost")
+                    self.is_connected = False
+                    break
 
 

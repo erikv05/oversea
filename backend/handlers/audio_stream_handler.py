@@ -23,9 +23,9 @@ class AudioStreamHandler:
         
         # Initialize WebRTC VAD
         self.vad = webrtcvad.Vad()
-        # Use mode 3 for maximum aggressiveness in filtering non-speech sounds
-        # Combined with our voice detection, this provides robust filtering
-        self.vad.set_mode(3)
+        # Use mode 2 for balanced speech detection (mode 3 can filter out valid speech)
+        # Mode 2 provides good balance between filtering noise and preserving speech
+        self.vad.set_mode(2)
         
         # Voice Activity Detection parameters
         self.speech_buffer = bytearray()  # Buffer for current speech segment
@@ -48,8 +48,8 @@ class AudioStreamHandler:
         
         # Adjusted thresholds for WebRTC VAD
         self.speech_start_frames = 2  # 60ms of speech to start (2 * 30ms)
-        self.speech_prefetch_frames = 7  # ~200ms of silence (7 * 30ms) - not used anymore
-        self.speech_confirm_frames = 7  # ~200ms of silence (7 * 30ms) - fast response
+        self.speech_prefetch_frames = 10  # ~300ms of silence (10 * 30ms) - not used anymore
+        self.speech_confirm_frames = 10  # ~300ms of silence (10 * 30ms) - prevent premature cutoff
         
         # Minimum speech duration
         self.min_speech_duration = VAD_CONFIG["min_speech_duration"]
@@ -70,6 +70,9 @@ class AudioStreamHandler:
         # Streaming transcription
         self.streaming_transcriber = None
         self.is_streaming = False
+        self.connection_retries = 0
+        self.max_retries = 3
+        self.reconnect_delay = 1.0  # seconds
         
     def set_interrupt_callback(self, callback):
         """Set the callback function for interruptions"""
@@ -84,14 +87,20 @@ class AudioStreamHandler:
         self.is_running = False
         if self.processing_task:
             self.processing_task.cancel()
-        if self.speculative_task and not self.speculative_task.done():
-            self.speculative_task.cancel()
+        # Stop streaming transcription if active
+        if self.is_streaming:
+            await self._stop_streaming_transcription()
             
     async def add_audio(self, audio_data: bytes):
         """Process incoming audio data with WebRTC VAD"""
         if not self.is_running:
             return
         
+        # Validate audio format (should be 16-bit PCM)
+        if len(audio_data) % 2 != 0:
+            print(f"{timestamp()} ⚠️  Invalid audio data length: {len(audio_data)} bytes (not 16-bit aligned)")
+            return
+            
         # Add incoming audio to accumulator
         self.audio_accumulator.extend(audio_data)
         
@@ -234,8 +243,7 @@ class AudioStreamHandler:
                         self.is_speaking = False
                         self.speech_confirmed = True
                         speech_duration = time.time() - self.speech_start_time
-                        buffer_size_ms = len(self.speech_buffer) / 16
-                        print(f"{timestamp()} ✅ Speech confirmed ended (~200ms silence, duration: {speech_duration:.2f}s)")
+                        print(f"{timestamp()} ✅ Speech confirmed ended (~300ms silence, duration: {speech_duration:.2f}s)")
                         
                         # Process all speech as queries when listening for user input
                         if self.is_listening_for_user and len(self.speech_buffer) > self.min_speech_duration:
@@ -424,6 +432,15 @@ class AudioStreamHandler:
         # All processing now happens in add_audio with VAD
         while self.is_running:
             await asyncio.sleep(1)
+    
+    async def _ensure_connection(self):
+        """Ensure Deepgram connection is active"""
+        if self.is_streaming and self.streaming_transcriber:
+            return True
+            
+        # Try to establish connection
+        await self._start_streaming_transcription()
+        return self.is_streaming
     
     async def _start_streaming_transcription(self):
         """Start streaming transcription with Deepgram"""
